@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createEmptyProject, addBlock, addZone, createDecomposition, connectBlocks, deleteBlock, validateProject, boardPath, createDemoProject } from '../src/model.js';
+import { BLOCK_ROLES, createEmptyProject, addBlock, addZone, createDecomposition, connectBlocks, deleteBlock, validateProject, boardPath, createDemoProject } from '../src/model.js';
 
 test('demo architecture contains three nested levels and valid connections', () => {
   const project = createDemoProject();
@@ -72,6 +72,17 @@ test('code and data templates carry their nature and data format through export'
   file.sourceRef = 'src/model.js#makeBlock';
   assert.equal(file.sourceRef, 'src/model.js#makeBlock');
   assert.equal(validateProject(JSON.parse(JSON.stringify(project))), null);
+});
+
+test('block roles are independent of hierarchy level and reject unknown values', () => {
+  const project = createEmptyProject();
+  const block = addBlock(project, project.rootBoardId, 'source-file', {x:0,y:0});
+  assert.equal(block.role, 'standard');
+  block.level = 'H3'; block.role = 'error-handler';
+  assert.ok(BLOCK_ROLES.includes(block.role));
+  assert.equal(validateProject(project), null);
+  block.role = 'unclassified';
+  assert.match(validateProject(project), /Invalid or duplicate block/);
 });
 
 test('zones are board-local, validated and optional in legacy v1 projects', () => {

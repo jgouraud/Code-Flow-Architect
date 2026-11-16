@@ -1,7 +1,7 @@
 import { BLOCK_TEMPLATES, DEFAULT_TEMPLATE, findTemplate } from './library.js';
 import { installWorkspace } from './p1.js';
 import {
-  BLOCK_WIDTH, BLOCK_HEIGHT, BLOCK_NATURES, DATA_FORMATS, STORAGE_KEY, LEGACY_STORAGE_KEY,
+  BLOCK_HEIGHT, BLOCK_NATURES, BLOCK_ROLES, DATA_FORMATS, STORAGE_KEY, LEGACY_STORAGE_KEY, blockWidth,
   MAX_PORTS, PORT_SIDES, addAnnotation, addPort, removePort, addBlock, addZone,
   boardPath, connectBlocks, createDecomposition, createDemoProject, createEmptyProject,
   deleteBlock, findBlock, migrateProject, validateProject
@@ -19,11 +19,12 @@ const lightKindColor = { data: '#246bb3', control: '#5c6980', error: '#b4533b' }
 let project;
 let currentBoardId;
 let selected = null;
-let libraryLevel = 'All';
 let pendingSource = null;
 let previewPoint = null;
 let undoStack = [];
 let redoStack = [];
+let showErrorArrows = false;
+let showConnectionNodes = false;
 
 function message(text) { elements.status.textContent = text; }
 function applyTheme(theme) {
@@ -67,10 +68,10 @@ function load() {
       const candidate = JSON.parse(stored);
       const error = validateProject(candidate);
       if (!error) return migrateProject(candidate);
-      message(`Stored project was invalid (${error}); loaded an example instead.`);
+      $('welcome-error').textContent = `Saved draft cannot be opened (${error}). Import a valid JSON file or choose a new board.`;
     }
-  } catch { message('Could not load local project; loaded an example instead.'); }
-  return createDemoProject();
+  } catch { $('welcome-error').textContent = 'Local draft could not be read. You can import a project JSON instead.'; }
+  return null;
 }
 function board() {
   const canonical = project.boards[currentBoardId];
@@ -81,7 +82,8 @@ const baseRender = render, baseInspector = renderInspector, baseOpenBoard = open
 render = function () {
   if (!p1) {
     p1 = installWorkspace({
-      project: () => project, elements, message, blockWidth: BLOCK_WIDTH, blockHeight: BLOCK_HEIGHT,
+      project: () => project, elements, message, blockWidth, blockHeight: BLOCK_HEIGHT,
+      templateWidth: id => blockWidth({label: findTemplate(id)?.label}),
       readContext: () => ({boardId:currentBoardId,selected,pendingSource,previewPoint}),
       writeContext: state => {currentBoardId=state.boardId;selected=state.selected;pendingSource=state.pendingSource;previewPoint=state.previewPoint;},
       render: () => render(), renderPane: () => {renderZones();renderBlocks();renderEdges();paintViewport();},
@@ -97,9 +99,13 @@ render = function () {
   if (workspaceProjectId !== project.id) {p1.onReset();workspaceProjectId=project.id;}
   baseRender(); p1.afterRender();
 };
-renderInspector = function () {baseInspector();p1?.extendInspector();};
+renderInspector = function () {
+  if (!$('inspector-dialog').open) return;
+  baseInspector(); p1?.extendInspector();
+};
 openBoard = function (id) {
   if (project.boards[id]) p1?.onNavigate(id,currentBoardId);
+  $('inspector-dialog').close();
   baseOpenBoard(id);
 };
 select = function (next) {baseSelect(next);p1?.onSelect();};
@@ -140,14 +146,8 @@ function button(label, cls, action, title = label) {
   return node;
 }
 function renderLibrary() {
-  const filters = $('level-filters'); filters.replaceChildren();
-  for (const level of ['All', 'H0', 'H1', 'H2', 'H3']) {
-    const item = button(level, `filter-pill ${libraryLevel === level ? 'active' : ''}`, () => { libraryLevel = level; renderLibrary(); });
-    item.setAttribute('aria-pressed', String(libraryLevel === level));
-    filters.append(item);
-  }
   const query = $('library-search').value.trim().toLowerCase();
-  const filtered = BLOCK_TEMPLATES.filter(item => (libraryLevel === 'All' || item.level === libraryLevel) && `${item.label} ${item.description} ${item.group} ${item.category}`.toLowerCase().includes(query));
+  const filtered = BLOCK_TEMPLATES.filter(item => `${item.label} ${item.description} ${item.level} ${item.group} ${item.category}`.toLowerCase().includes(query));
   elements.library.replaceChildren();
   let group = '';
   for (const template of filtered) {
@@ -175,7 +175,7 @@ function renderLibrary() {
 function addTemplate(templateId, position = null) {
   const center = position ?? worldPointFromScreen(elements.canvas.getBoundingClientRect().left + elements.canvas.clientWidth / 2, elements.canvas.getBoundingClientRect().top + elements.canvas.clientHeight / 2);
   const count = board().blocks.length;
-  const blockPosition = position ?? { x: center.x - BLOCK_WIDTH/2 + (count%4)*14, y: center.y - BLOCK_HEIGHT/2 + (count%4)*18 };
+  const blockPosition = position ?? { x: center.x - blockWidth({label: findTemplate(templateId)?.label})/2 + (count%4)*14, y: center.y - BLOCK_HEIGHT/2 + (count%4)*18 };
   let id;
   if (mutate(() => { id = addBlock(project, currentBoardId, templateId, blockPosition).id; })) {
     selected = { type: 'block', id }; render(); message('Block added. Double-click to decompose it.');
@@ -206,14 +206,19 @@ function renderZones() {
     node.style.height = `${zone.height}px`;
     node.tabIndex = 0;
     node.setAttribute('role', 'group');
-    node.setAttribute('aria-label', `${zone.kind} zone: ${zone.label}. Use arrow keys to reposition.`);
+    node.setAttribute('aria-label', `${zone.kind} zone: ${zone.label}. Drag its outline to move, or its corner to resize.`);
     node.append(element('span', 'zone-caption', zone.label));
-    const grip = button('↘', 'zone-resize', () => select({type:'zone',id:zone.id}), `Resize ${zone.label}`);
+    for (const side of ['top', 'right', 'bottom', 'left']) {
+      const border = element('span', `zone-grab zone-grab-${side}`);
+      border.setAttribute('aria-hidden', 'true');
+      border.addEventListener('pointerdown', event => startZoneDrag(event, zone, 'move'));
+      border.addEventListener('contextmenu', event => { event.preventDefault(); openInspector({type:'zone',id:zone.id}); });
+      node.append(border);
+    }
+    const grip = button('↘', 'zone-resize', () => openInspector({type:'zone',id:zone.id}), `Resize ${zone.label}`);
     grip.setAttribute('aria-label', `Resize ${zone.label}`);
     grip.addEventListener('pointerdown', event => startZoneDrag(event, zone, 'resize'));
     node.append(grip);
-    node.addEventListener('click', event => { event.stopPropagation(); select({type:'zone',id:zone.id}); });
-    node.addEventListener('pointerdown', event => startZoneDrag(event, zone, 'move'));
     node.addEventListener('keydown', event => {
       if (event.target !== node || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) return;
       event.preventDefault();
@@ -227,20 +232,36 @@ function renderZones() {
 }
 function renderBlocks() {
   elements.blocks.replaceChildren();
-  for (const block of board().blocks) {
+  const current = board();
+  const errorLinked = new Set();
+  const ordinarilyLinked = new Set();
+  if (!showErrorArrows) for (const edge of current.edges) {
+    const linked = [edge.source.blockId, edge.target.blockId];
+    if (edge.kind === 'error') linked.forEach(id => errorLinked.add(id));
+    else linked.forEach(id => ordinarilyLinked.add(id));
+  }
+  for (const block of current.blocks) {
+    const role = block.role ?? 'standard';
+    if (!showErrorArrows && (role === 'error-handler' || (errorLinked.has(block.id) && !ordinarilyLinked.has(block.id)))) continue;
     const node = element('div', `block ${selected?.type === 'block' && selected.id === block.id ? 'selected' : ''}`);
     const nature = block.nature ?? 'component';
-    node.dataset.nature = nature;
-    node.dataset.blockId = block.id; node.style.left = `${block.position.x}px`; node.style.top = `${block.position.y}px`;
+    node.dataset.nature = nature; node.dataset.role = role;
+    node.dataset.blockId = block.id; node.style.left = `${block.position.x}px`; node.style.top = `${block.position.y}px`; node.style.width = `${blockWidth(block)}px`;
     node.tabIndex = 0; node.setAttribute('role','group');
-    node.setAttribute('aria-label', `${block.label}, ${block.level} ${nature}${block.dataFormat && nature === 'data' ? `, ${block.dataFormat}` : ''}${block.childBoardId ? ', has decomposition' : ''}`);
+    node.setAttribute('aria-label', `${block.label}, ${role} ${block.level} ${nature}${block.dataFormat && nature === 'data' ? `, ${block.dataFormat}` : ''}${block.childBoardId ? ', has decomposition' : ''}`);
     const top = element('div','block-top');
     const icon = element('span','block-icon',getTemplateIcon(block)); icon.setAttribute('aria-hidden','true');
     top.append(icon,element('span','block-level',block.level), element('span','block-nature',nature === 'data' && block.dataFormat ? `data · ${block.dataFormat}` : nature));
+    if (role !== 'standard') top.append(element('span','block-role',role.replace('-', ' ')));
     if (block.childBoardId) { const mark = element('span','decomposed-mark','▤'); mark.title = 'Has decomposition'; top.append(mark); }
     const name = element('div','block-name',block.label);
     const description = element('div','block-description',block.sourceRef || block.description || 'Architectural component');
-    node.append(top,name,description);
+    const actions = element('div','block-actions');
+    actions.append(
+      button('✎','block-mini',event => {event.stopPropagation();openInspector({type:'block',id:block.id});},`Inspect ${block.label}`),
+      button('↗','block-mini',event => {event.stopPropagation();openDecomposition(block.id);},`Decompose ${block.label}`)
+    );
+    node.append(top,name,description,actions);
     for (const port of block.ports) {
       const control = button('', `port ${port.direction} side-${port.side} ${pendingSource && port.direction === 'input' ? 'connection-target' : ''}`, event => {
         event.stopPropagation();
@@ -257,11 +278,15 @@ function renderBlocks() {
       node.append(control);
     }
     node.addEventListener('click', event => {
-      if (event.target.closest('.port')) return;
+      if (event.target.closest('.port,.block-actions')) return;
       select({type:'block',id:block.id});
     });
+    node.addEventListener('contextmenu', event => {
+      if (event.target.closest('.port')) return;
+      event.preventDefault(); openInspector({type:'block',id:block.id});
+    });
     node.addEventListener('dblclick', event => {
-      if (!event.target.closest('.port')) openDecomposition(block.id);
+      if (!event.target.closest('.port,.block-actions')) openDecomposition(block.id);
     });
     node.addEventListener('keydown', event => {
       if (event.target !== node) return;
@@ -280,10 +305,11 @@ function renderBlocks() {
 function portAnchor(block, port) {
   const { x, y } = block.position;
   const along = port.offset;
-  if (port.side === 'top') return { x: x + BLOCK_WIDTH * along, y, dx: 0, dy: -1 };
-  if (port.side === 'bottom') return { x: x + BLOCK_WIDTH * along, y: y + BLOCK_HEIGHT, dx: 0, dy: 1 };
+  const width = blockWidth(block);
+  if (port.side === 'top') return { x: x + width * along, y, dx: 0, dy: -1 };
+  if (port.side === 'bottom') return { x: x + width * along, y: y + BLOCK_HEIGHT, dx: 0, dy: 1 };
   if (port.side === 'left') return { x, y: y + BLOCK_HEIGHT * along, dx: -1, dy: 0 };
-  return { x: x + BLOCK_WIDTH, y: y + BLOCK_HEIGHT * along, dx: 1, dy: 0 };
+  return { x: x + width, y: y + BLOCK_HEIGHT * along, dx: 1, dy: 0 };
 }
 function edgeGeometry(source, target) {
   const span = Math.hypot(target.x - source.x, target.y - source.y);
@@ -319,6 +345,7 @@ function renderEdges() {
   }
   elements.edges.append(defs);
   for (const edge of current.edges) {
+    if (!showErrorArrows && edge.kind === 'error') continue;
     const source = lookup.get(edge.source.blockId), target = lookup.get(edge.target.blockId);
     const output = source?.ports.find(port => port.id === edge.source.portId);
     const input = target?.ports.find(port => port.id === edge.target.portId);
@@ -332,24 +359,26 @@ function renderEdges() {
     const hit = svg('path', { d: geometry.d, stroke: 'transparent', 'stroke-width': 18,
       fill: 'none', class: 'edge-hit', 'data-edge-id': edge.id, tabindex: '0', role: 'button',
       'aria-label': `Select ${edge.kind} connection from ${source.label}, ${output.name} to ${target.label}, ${input.name}` });
-    hit.addEventListener('click', event => { event.stopPropagation(); select({type:'edge',id:edge.id}); });
-    hit.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); } });
+    hit.addEventListener('click', event => { event.stopPropagation(); openInspector({type:'edge',id:edge.id}); });
+    hit.addEventListener('contextmenu', event => { event.preventDefault(); openInspector({type:'edge',id:edge.id}); });
+    hit.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openInspector({type:'edge',id:edge.id}); } });
     elements.edges.append(visible, hit);
-    if (edge.label) {
+    if (showConnectionNodes && edge.label) {
       const at = geometry.at(.5);
       const text = svg('text', { x: at.x, y: at.y - 18, fill: document.documentElement.dataset.theme === 'light' ? '#334b70' : '#cbd5e1',
         'font-size': 12, 'text-anchor': 'middle', 'pointer-events': 'none', 'data-edge-id': edge.id });
       text.textContent = edge.label.slice(0, 40);
       elements.edges.append(text);
     }
+    if (!showConnectionNodes) continue;
     for (const note of edge.annotations) {
       const at = geometry.at(note.at);
       const label = `Annotation: ${note.caption || 'Untitled'}. ${note.dataType ? `Type ${note.dataType}.` : ''} Press Enter to inspect.`;
       const dot = svg('circle', { cx: at.x, cy: at.y, r: isSelected ? 8 : 6, fill: color,
         stroke: document.documentElement.dataset.theme === 'light' ? '#fff' : '#18243d', 'stroke-width': 2,
         class: 'edge-note', 'data-edge-id': edge.id, tabindex: 0, role: 'button', 'aria-label': label });
-      dot.addEventListener('click', event => { event.stopPropagation(); select({ type:'edge', id:edge.id }); });
-      dot.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); } });
+      dot.addEventListener('click', event => { event.stopPropagation(); openInspector({ type:'edge', id:edge.id }); });
+      dot.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openInspector({type:'edge',id:edge.id}); } });
       elements.edges.append(dot);
       if (note.dataType) {
         const badge = svg('text', { x: at.x + 10, y: at.y - 10, class:'edge-type', 'data-edge-id': edge.id, 'pointer-events':'none' });
@@ -368,14 +397,18 @@ function renderEdges() {
     }
   }
 }
+function openInspector(next) {
+  select(next);
+  const dialog = $('inspector-dialog');
+  if (!dialog.open) dialog.showModal();
+  renderInspector();
+}
 function renderInspector() {
   const area = elements.inspector; area.replaceChildren();
   if (!selected) {
     const hint = element('div','inspector-empty');
-    hint.append(element('div','inspector-empty-icon','◇'),element('h3','','Nothing selected'),element('p','','Select a block or connection to edit its details. Double-click any block to enter a decomposition board.'));
-    const guide = element('div','quick-guide');
-    guide.append(element('strong','','Quick start'),element('p','','1. Drag a block from the library\n2. Connect output → input ports\n3. Double-click to decompose\n4. Export your design as JSON'));
-    area.append(hint,guide);return;
+    hint.append(element('div','inspector-empty-icon','◇'),element('h3','','Nothing selected'),element('p','','Choose a block, connection or zone to inspect.'));
+    area.append(hint);return;
   }
   if (selected.type === 'zone') {
     const zone = (board().zones ?? []).find(item => item.id === selected.id);
@@ -428,6 +461,7 @@ function renderInspector() {
   addTextareaField(area,'Purpose / notes',block.description,value=>mutate(()=>{block.description=value.slice(0,2000);}));
   addTextField(area,'Source path / symbol',block.sourceRef ?? '',value=>mutate(()=>{block.sourceRef=value.slice(0,500);}));
   addSelectField(area,'Abstraction level',block.level,['H0','H1','H2','H3'],value=>mutate(()=>{block.level=value;}));
+  addSelectField(area,'Block type',block.role ?? 'standard',BLOCK_ROLES.map(value => ({value,label:value.replace('-', ' ')})),value=>mutate(()=>{block.role=value;}));
   addSelectField(area,'Block nature',block.nature ?? 'component',BLOCK_NATURES,value=>mutate(()=>{block.nature=value;if(value==='data' && !block.dataFormat) block.dataFormat='json';}));
   if ((block.nature ?? 'component') === 'data') addSelectField(area,'Data format',block.dataFormat ?? 'other',DATA_FORMATS,value=>mutate(()=>{block.dataFormat=value;}));
   area.append(element('div','inspector-divider'));
@@ -496,7 +530,7 @@ function addTextareaField(parent,label,value,onSave) {
 function addSelectField(parent,label,value,options,onSave) {
   const wrapper=element('label','field');wrapper.append(element('span','field-label',label));
   const select=element('select','field-input');
-  for(const option of options){const item=element('option','',option.toUpperCase());item.value=option;select.append(item);}
+  for(const option of options){const value=typeof option === 'string' ? option : option.value;const label=typeof option === 'string' ? option.toUpperCase() : option.label;const item=element('option','',label);item.value=value;select.append(item);}
   select.value=value;select.addEventListener('change',()=>onSave(select.value));wrapper.append(select);parent.append(wrapper);
 }
 function render() {
@@ -565,7 +599,7 @@ function startConnectionDrag(event, sourceId, sourcePortId) {
   window.addEventListener('pointermove',move);window.addEventListener('pointerup',up,{once:true});window.addEventListener('pointercancel',cancel,{once:true});
 }
 function startBlockDrag(event,block) {
-  if(event.button!==0||event.target.closest('.port'))return;
+  if(event.button!==0||event.target.closest('.port,.block-actions'))return;
   event.stopPropagation();
   select({type:'block',id:block.id});
   const origin={...block.position};const sx=event.clientX,sy=event.clientY;
@@ -640,7 +674,7 @@ function zoomTo(nextZoom,pointerX=elements.canvas.clientWidth/2,pointerY=element
 }
 function fitView() {
   const current=board();
-  const boxes=[...current.blocks.map(b=>({x:b.position.x,y:b.position.y,width:BLOCK_WIDTH,height:BLOCK_HEIGHT})),...(current.zones ?? []).map(z=>({x:z.position.x,y:z.position.y,width:z.width,height:z.height}))];
+  const boxes=[...current.blocks.map(b=>({x:b.position.x,y:b.position.y,width:blockWidth(b),height:BLOCK_HEIGHT})),...(current.zones ?? []).map(z=>({x:z.position.x,y:z.position.y,width:z.width,height:z.height}))];
   if(!boxes.length){current.viewport={x:80,y:100,zoom:1};paintViewport();save();return;}
   const minX=Math.min(...boxes.map(b=>b.x));
   const maxX=Math.max(...boxes.map(b=>b.x+b.width));
@@ -651,10 +685,30 @@ function fitView() {
   current.viewport={x:(elements.canvas.clientWidth-width*zoom)/2-minX*zoom,y:(elements.canvas.clientHeight-height*zoom)/2-minY*zoom,zoom};
   paintViewport();save();
 }
+function setBoardFullscreen(fullscreen) {
+  const app = $('app');
+  app.classList.toggle('board-fullscreen', fullscreen);
+  const toggle = $('fullscreen-toggle');
+  toggle.setAttribute('aria-pressed', String(fullscreen));
+  toggle.textContent = fullscreen ? 'Exit full screen' : 'Full screen';
+  toggle.title = fullscreen ? 'Exit full screen (Esc)' : 'Show drawing board full screen';
+  if (fullscreen) elements.canvas.focus({preventScroll:true});
+  else toggle.focus({preventScroll:true});
+}
+function toggleConnectionVisuals(kind) {
+  const isError = kind === 'error';
+  if (isError) showErrorArrows = !showErrorArrows;
+  else showConnectionNodes = !showConnectionNodes;
+  const active = isError ? showErrorArrows : showConnectionNodes;
+  const control = $(isError ? 'toggle-error-arrows' : 'toggle-connection-nodes');
+  control.setAttribute('aria-pressed', String(active));
+  control.classList.toggle('accent', active);
+  render();
+}
 function connectEvents() {
   $('library-search').addEventListener('input',renderLibrary);
   $('toggle-library').addEventListener('click',()=>togglePanel('library'));
-  $('toggle-inspector').addEventListener('click',()=>togglePanel('inspector'));
+  $('close-inspector').addEventListener('click',()=>$('inspector-dialog').close());
   $('theme-toggle').addEventListener('click',()=>{
     const next=document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
     applyTheme(next);
@@ -666,6 +720,9 @@ function connectEvents() {
   $('project-name').addEventListener('change',event=>{const name=event.target.value.trim()||'Untitled project';if(name!==project.name)mutate(()=>{project.name=name;});});
   $('fit-view').addEventListener('click',fitView);
   $('center-view').addEventListener('click',()=>{const current=board().viewport;current.x=80;current.y=95;current.zoom=1;paintViewport();save();});
+  $('fullscreen-toggle').addEventListener('click',()=>setBoardFullscreen(!$('app').classList.contains('board-fullscreen')));
+  $('toggle-error-arrows').addEventListener('click',()=>toggleConnectionVisuals('error'));
+  $('toggle-connection-nodes').addEventListener('click',()=>toggleConnectionVisuals('nodes'));
   for (const kind of ['frontend','backend']) {
     $(`add-${kind}-zone`).addEventListener('click',()=>{
       const rect=elements.canvas.getBoundingClientRect();
@@ -679,8 +736,10 @@ function connectEvents() {
   $('zoom-in').addEventListener('click',()=>zoomTo(board().viewport.zoom*1.15));
   $('zoom-out').addEventListener('click',()=>zoomTo(board().viewport.zoom/1.15));
   $('new-project').addEventListener('click',()=>{
-    if(!confirm('Create a blank project? Export your current project first if you need a backup.'))return;
-    project=createEmptyProject();currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSource=null;save();render();message('New blank project created');
+    $('app').hidden = true; $('welcome').hidden = false;
+    $('welcome-error').textContent = '';
+    $('continue-last').hidden = false;
+    $('start-empty').focus();
   });
   $('export').addEventListener('click',()=>{
     const blob=new Blob([JSON.stringify(project,null,2)],{type:'application/json'});
@@ -692,13 +751,13 @@ function connectEvents() {
   $('import').addEventListener('click',()=>$('import-file').click());
   $('import-file').addEventListener('change',async event=>{
     const file=event.target.files?.[0];event.target.value='';if(!file)return;
-    if(file.size>2_000_000){message('Import rejected: JSON files must be smaller than 2 MB');return;}
+    if(file.size>2_000_000){importError('Import rejected: JSON files must be smaller than 2 MB');return;}
     try{
       const candidate=JSON.parse(await file.text());const error=validateProject(candidate);
       if(error)throw new Error(error);
-      project=migrateProject(candidate);currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSource=null;save();render();
-      message(candidate.schemaVersion===1?'Legacy v1 project migrated to v2. Original import file remains unchanged.':'Project imported successfully');
-    }catch(error){message(`Import failed: ${error.message}`);}
+      replaceProject(migrateProject(candidate), candidate.schemaVersion===1
+        ? 'Legacy v1 project migrated to v2. Original import file remains unchanged.' : 'Project imported successfully');
+    }catch(error){importError(`Import failed: ${error.message}`);}
   });
   elements.canvas.addEventListener('dragover',event=>{event.preventDefault();event.dataTransfer.dropEffect='copy';elements.canvas.classList.add('drag-over');});
   elements.canvas.addEventListener('dragleave',()=>elements.canvas.classList.remove('drag-over'));
@@ -707,7 +766,7 @@ function connectEvents() {
     const templateId=event.dataTransfer.getData('application/x-codeflow-template');
     if(!findTemplate(templateId))return;
     const point=worldPointFromScreen(event.clientX,event.clientY);
-    addTemplate(templateId,{x:point.x-BLOCK_WIDTH/2,y:point.y-BLOCK_HEIGHT/2});
+    addTemplate(templateId,{x:point.x-blockWidth({label:findTemplate(templateId)?.label})/2,y:point.y-BLOCK_HEIGHT/2});
   });
   elements.canvas.addEventListener('pointerdown',event=>{
     if(event.button!==0 || event.target.closest('.block') || event.target.closest('.zone') || event.target.closest('.edge-hit') || event.target.closest('.edge-note') || event.target.closest('button'))return;
@@ -722,6 +781,10 @@ function connectEvents() {
     event.preventDefault();const rect=elements.canvas.getBoundingClientRect();zoomTo(board().viewport.zoom*(event.deltaY>0?.91:1.09),event.clientX-rect.left,event.clientY-rect.top);
   },{passive:false});
   document.addEventListener('keydown',event=>{
+    if (event.key === 'Escape' && $('app').classList.contains('board-fullscreen')) {
+      event.preventDefault();setBoardFullscreen(false);return;
+    }
+    if (!$('welcome').hidden || $('inspector-dialog').open || $('json-help-dialog').open) return;
     if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
     if(event.key==='Escape'){pendingSource=null;previewPoint=null;renderEdges();message('Connection cancelled');return;}
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='z'){event.preventDefault();travelHistory(event.shiftKey?'redo':'undo');return;}
@@ -736,11 +799,62 @@ function connectEvents() {
   });
 }
 
-project=load();currentBoardId=project.rootBoardId;
+const savedDraft = load();
+project = savedDraft ?? createEmptyProject();
+currentBoardId = project.rootBoardId;
+let sessionStarted = false;
+let firstEditorOpen = true;
+function showEditor(note) {
+  $('welcome').hidden = true;
+  $('app').hidden = false;
+  if (firstEditorOpen) {
+    document.querySelector('.workspace').classList.add('library-collapsed');
+    document.querySelector('.library-panel').classList.add('collapsed');
+    const toggle = $('toggle-library');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-label', 'Expand block library');
+    toggle.title = 'Expand block library'; toggle.textContent = '›';
+    firstEditorOpen = false;
+  }
+  save(); render(); fitView(); message(note);
+  elements.canvas.focus({preventScroll:true});
+}
+function replaceProject(next, note) {
+  if ((savedDraft || sessionStarted) && !confirm('Replace the current local project? Export it first if you need a backup.')) return false;
+  project = next; currentBoardId = project.rootBoardId;
+  selected = null; pendingSource = null; previewPoint = null;
+  undoStack = []; redoStack = [];
+  sessionStarted = true;
+  showEditor(note);
+  return true;
+}
+function importError(text) {
+  if ($('welcome').hidden) message(text);
+  else $('welcome-error').textContent = text;
+}
+function makeStarterProject() {
+  const starter = createEmptyProject('Starter architecture');
+  const root = starter.rootBoardId;
+  starter.boards[root].viewport = {x:45,y:95,zoom:.78};
+  const input = addBlock(starter,root,'data-ingestion',{x:90,y:190});
+  const process = addBlock(starter,root,'data-processing',{x:425,y:190});
+  const output = addBlock(starter,root,'report-generation',{x:760,y:190});
+  input.label = 'Input'; process.label = 'Process'; output.label = 'Output';
+  connectBlocks(starter,root,input.id,process.id);
+  connectBlocks(starter,root,process.id,output.id);
+  return starter;
+}
 setupTheme();connectEvents();renderLibrary();
 for (const nature of BLOCK_NATURES) {
   const entry = element('li', '', nature[0].toUpperCase() + nature.slice(1));
   entry.dataset.nature = nature;
   $('nature-legend-list').append(entry);
 }
-render();
+$('continue-last').hidden = !savedDraft;
+$('continue-last').addEventListener('click',() => {sessionStarted=true;showEditor('Continued locally saved project');});
+$('start-empty').addEventListener('click',() => replaceProject(createEmptyProject(),'New empty drawboard'));
+$('start-example').addEventListener('click',() => replaceProject(createDemoProject(),'Example architecture opened'));
+$('start-template').addEventListener('click',() => replaceProject(makeStarterProject(),'Starter template opened'));
+$('start-import').addEventListener('click',()=>$('import-file').click());
+$('welcome-help').addEventListener('click',()=>$('json-help-dialog').showModal());
+$('close-json-help').addEventListener('click',()=>$('json-help-dialog').close());

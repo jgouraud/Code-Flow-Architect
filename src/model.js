@@ -6,6 +6,7 @@ export const FLOW_KINDS = ['data', 'control', 'error'];
 export const MAX_PORTS = 32;
 export const MAX_ANNOTATIONS = 16;
 export const BLOCK_NATURES = ['component', 'file', 'module', 'class', 'function', 'method', 'interface', 'service', 'data'];
+export const BLOCK_ROLES = ['standard', 'input', 'output', 'error-handler'];
 export const DATA_FORMATS = ['database', 'csv', 'json', 'parquet', 'xml', 'yaml', 'binary', 'other'];
 export const ZONE_KINDS = ['frontend', 'backend'];
 export const BLOCK_WIDTH = 218;
@@ -14,6 +15,11 @@ export const STORAGE_KEY = 'codeflow-architect-project-v2';
 export const LEGACY_STORAGE_KEY = 'codeflow-architect-project-v1';
 
 export function newId() { return globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+
+export function blockWidth(block) {
+  const titleLength = Array.from(String(block?.label ?? '')).length;
+  return Math.min(420, Math.max(170, 120 + titleLength * 10));
+}
 
 export function createEmptyProject(name = 'Untitled project') {
   return {
@@ -27,7 +33,7 @@ export function makeBlock(templateId, position, id = newId()) {
   return {
     id, templateId: template.id, label: template.label, level: template.level,
     category: template.category, description: template.description,
-    nature: template.nature, dataFormat: template.dataFormat, sourceRef: '',
+    nature: template.nature, role: 'standard', dataFormat: template.dataFormat, sourceRef: '',
     position: { x: Math.round(position.x), y: Math.round(position.y) }, childBoardId: null,
     ports: [
       { id: `${id}-in`, name: 'Input', direction: 'input', kind: 'data', side: 'left', offset: 0.5, dataType: '' },
@@ -136,6 +142,7 @@ export function migrateProject(value) {
   copy.schemaVersion = SCHEMA_VERSION;
   for (const board of Object.values(copy.boards ?? {})) {
     for (const block of board?.blocks ?? []) {
+      block.role ??= 'standard';
       for (const port of block?.ports ?? []) {
         port.side = port.direction === 'input' ? 'left' : 'right';
         port.offset = 0.5;
@@ -205,7 +212,7 @@ export function validateProject(value) {
       }
     }
     for (const block of board.blocks) {
-      if (!block || typeof block.id !== 'string' || ids.has(block.id) || typeof block.label !== 'string' || block.label.length > 200 || typeof block.description !== 'string' || block.description.length > 2000 || typeof block.templateId !== 'string' || typeof block.category !== 'string' || !['H0','H1','H2','H3'].includes(block.level) || (block.childBoardId !== null && typeof block.childBoardId !== 'string') || (block.nature !== undefined && !BLOCK_NATURES.includes(block.nature)) || (block.dataFormat !== undefined && block.dataFormat !== null && !DATA_FORMATS.includes(block.dataFormat)) || (block.sourceRef !== undefined && (typeof block.sourceRef !== 'string' || block.sourceRef.length > 500))) return 'Invalid or duplicate block';
+      if (!block || typeof block.id !== 'string' || ids.has(block.id) || typeof block.label !== 'string' || block.label.length > 200 || typeof block.description !== 'string' || block.description.length > 2000 || typeof block.templateId !== 'string' || typeof block.category !== 'string' || !['H0','H1','H2','H3'].includes(block.level) || (block.childBoardId !== null && typeof block.childBoardId !== 'string') || (block.nature !== undefined && !BLOCK_NATURES.includes(block.nature)) || (block.role !== undefined && !BLOCK_ROLES.includes(block.role)) || (block.dataFormat !== undefined && block.dataFormat !== null && !DATA_FORMATS.includes(block.dataFormat)) || (block.sourceRef !== undefined && (typeof block.sourceRef !== 'string' || block.sourceRef.length > 500))) return 'Invalid or duplicate block';
       ids.add(block.id);
       if (!block.position || !Number.isFinite(block.position.x) || !Number.isFinite(block.position.y)) return 'Invalid block position';
       if (!Array.isArray(block.ports) || block.ports.length > MAX_PORTS) return 'Invalid block ports';

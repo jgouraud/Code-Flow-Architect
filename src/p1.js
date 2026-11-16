@@ -2,7 +2,7 @@ import { newId, boardPath, findBlock } from './model.js';
 import { installSimulation } from './simulation.js';
 import {
   createWorkspace, panesIn, findPane, splitPane, closePane, navigatePane, goHistory,
-  searchArchitecture, dependencyIds, toLayoutTree, restoreLayout, reconcileWorkspace
+  searchArchitecture, reconcileWorkspace
 } from './workspace.js';
 
 /** Install multiple views over the existing canonical project and undo/redo stream. */
@@ -20,11 +20,8 @@ export function installWorkspace(api) {
   canvas.before(workspaceHost);
   let selectedTourId = null, tourIndex = -1;
   let simulation = null;
-  const filter = { nature: '', level: '', flow: '', zone: '' };
   let showMinimap = false;
-  const controlBar = document.createElement('div');
-  controlBar.className = 'workspace-tools';
-  document.querySelector('.board-header-actions').prepend(controlBar);
+  const controlBar = document.getElementById('floating-workspace-tools');
 
   function el(tag, className = '', content = '') {
     const node = document.createElement(tag); node.className = className; node.textContent = content; return node;
@@ -32,6 +29,20 @@ export function installWorkspace(api) {
   function btn(label, action, title = label) {
     const node = el('button', 'btn ghost small', label);
     node.type = 'button'; node.title = title; node.addEventListener('click', action); return node;
+  }
+  function layoutButton(label, cells, action) {
+    const control = btn('', action, label);
+    control.className = 'layout-icon-button';
+    control.setAttribute('aria-label', label);
+    const graphic = document.createElementNS('http://www.w3.org/2000/svg','svg');
+    graphic.setAttribute('viewBox','0 0 24 24');
+    graphic.setAttribute('aria-hidden','true');
+    for (const [x,y,width,height] of cells) {
+      const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      for (const [key,value] of Object.entries({x,y,width,height,rx:1.5})) rect.setAttribute(key,String(value));
+      graphic.append(rect);
+    }
+    control.append(graphic); return control;
   }
   function syncFromActive() {
     if (!currentPane) return;
@@ -115,7 +126,7 @@ export function installWorkspace(api) {
       const templateId = event.dataTransfer.getData('application/x-codeflow-template');
       if (!api.templateExists(templateId)) return;
       const point = api.worldPoint(event.clientX, event.clientY);
-      api.addTemplate(templateId, { x: point.x - api.blockWidth / 2, y: point.y - api.blockHeight / 2 });
+      api.addTemplate(templateId, { x: point.x - api.templateWidth(templateId) / 2, y: point.y - api.blockHeight / 2 });
     });
     target.addEventListener('pointerdown', event => {
       if (event.button !== 0 || event.target.closest('.block,.zone,.edge-hit,.edge-note,button')) return;
@@ -234,29 +245,7 @@ export function installWorkspace(api) {
     for (const [id, dom] of nodeMap) dom.root.classList.toggle('active', id === workspace.activeId);
   }
   function applyFilter(pane) {
-    const dom = nodeMap.get(pane.id);
-    if (!dom) return;
-    const board = api.project().boards[pane.boardId]; if (!board) return;
-    const connections = dependencyIds(board, pane.selected);
-    const zoneIds = new Set();
-    if (filter.zone) for (const block of board.blocks) {
-      if ((board.zones ?? []).some(z => z.kind === filter.zone && block.position.x >= z.position.x &&
-        block.position.y >= z.position.y && block.position.x <= z.position.x + z.width && block.position.y <= z.position.y + z.height)) zoneIds.add(block.id);
-    }
-    for (const block of board.blocks) {
-      const node = [...dom.elements.blocks.children].find(item => item.dataset.blockId === block.id);
-      if (!node) continue;
-      const matches = (!filter.nature || (block.nature ?? 'component') === filter.nature) &&
-        (!filter.level || block.level === filter.level) && (!filter.zone || zoneIds.has(block.id));
-      node.classList.toggle('dimmed', !matches);
-      node.classList.toggle('dependency-focus', !!pane.selected && connections.has(block.id));
-      node.classList.toggle('dependency-muted', !!pane.selected && !connections.has(block.id));
-    }
-    for (const shape of dom.elements.edges.querySelectorAll('[data-edge-id]')) {
-      const edge = board.edges.find(item => item.id === shape.dataset.edgeId);
-      shape.classList.toggle('dimmed', !edge || (!!filter.flow && edge.kind !== filter.flow));
-      shape.classList.toggle('dependency-muted', !!pane.selected && !connections.has(edge?.id));
-    }
+    // The diagram remains legible without automatic dimming or filter menus.
     renderMinimap(pane);
   }
   function renderMinimap(pane) {
@@ -266,7 +255,7 @@ export function installWorkspace(api) {
     const blocks = api.project().boards[pane.boardId].blocks;
     if (!blocks.length) return;
     const minX = Math.min(...blocks.map(b => b.position.x));
-    const maxX = Math.max(...blocks.map(b => b.position.x + api.blockWidth));
+    const maxX = Math.max(...blocks.map(b => b.position.x + api.blockWidth(b)));
     const minY = Math.min(...blocks.map(b => b.position.y));
     const maxY = Math.max(...blocks.map(b => b.position.y + api.blockHeight));
     const root = el('div', 'pane-minimap'); root.setAttribute('aria-label', `Minimap of ${blocks.length} blocks`);
@@ -280,49 +269,13 @@ export function installWorkspace(api) {
   }
   function renderControls() {
     controlBar.replaceChildren();
-    const project = api.project();
-    const split = direction => {
-      syncFromActive(); const pane = splitPane(workspace, project, direction);
-      if (!pane) { api.message('Four visible panes maximum'); return; }
-      buildLayout(); api.render();
-    };
-    controlBar.append(btn('Split right', () => split('horizontal')),
-      btn('Split down', () => split('vertical')),
-      btn('Two columns', () => preset('columns')),
-      btn('2×2', () => preset('grid')));
-    const panePicker = el('select','field-input workspace-layout-select');
-    panePicker.setAttribute('aria-label','Active architecture pane');
-    for(const pane of panesIn(workspace.root))panePicker.append(new Option(project.boards[pane.boardId]?.name??'Board',pane.id));
-    panePicker.value=workspace.activeId;
-    panePicker.addEventListener('change',()=>{activate(findPane(workspace,panePicker.value),true);resize();});
-    controlBar.append(panePicker);
-    const saved = el('select', 'field-input workspace-layout-select');
-    saved.setAttribute('aria-label', 'Open saved workspace layout');
-    saved.append(new Option('Layouts…', ''));
-    for (const layout of project.workspaceLayouts ?? []) saved.append(new Option(layout.label, layout.id));
-    saved.addEventListener('change', () => {
-      const layout = (project.workspaceLayouts ?? []).find(x => x.id === saved.value);
-      if (layout) { workspace = restoreLayout(project, layout); buildLayout(); api.render(); }
-    });
-    controlBar.append(saved, btn('Save layout', () => {
-      const label = prompt('Layout name (saved in project export):', 'Onboarding view');
-      if (!label?.trim()) return;
-      api.mutate(() => {
-        (project.workspaceLayouts ??= []).push({ id: newId(), label: label.slice(0,120), root: toLayoutTree(workspace.root) });
-      });
-    }));
-    const filterBar = el('div', 'workspace-filter-bar');
-    for (const [key, options] of [
-      ['nature', ['component','file','module','class','function','method','interface','service','data']],
-      ['level', ['H0','H1','H2','H3']], ['flow', ['data','control','error']], ['zone', ['frontend','backend']]
-    ]) {
-      const select = el('select','workspace-filter'); select.setAttribute('aria-label',`Dim by ${key}`);
-      select.append(new Option(`${key}: all`,''));
-      for (const option of options) select.append(new Option(option,option));
-      select.value = filter[key]; select.addEventListener('change',()=>{filter[key]=select.value;api.render();});
-      filterBar.append(select);
-    }
-    controlBar.append(filterBar,btn(showMinimap?'Minimap ✓':'Minimap',()=>{showMinimap=!showMinimap;api.render();}));
+    // Match the four layouts in the compact editor icon set.
+    controlBar.append(
+      layoutButton('Four panes', [[2,2,9,9],[13,2,9,9],[2,13,9,9],[13,13,9,9]], () => preset('grid')),
+      layoutButton('Two columns', [[2,2,9,20],[13,2,9,20]], () => preset('columns')),
+      layoutButton('Two rows', [[2,2,20,9],[2,13,20,9]], () => preset('rows')),
+      layoutButton('Single pane', [[2,2,20,20]], () => preset('single'))
+    );
   }
   function preset(mode) {
     const project=api.project();const previous=panesIn(workspace.root).map(p=>p.boardId);
@@ -330,7 +283,8 @@ export function installWorkspace(api) {
     const target=i=>previous[i]??available[i]??project.rootBoardId;
     workspace=createWorkspace(project);
     if (mode === 'columns') splitPane(workspace,project,'horizontal',target(1));
-    else {
+    else if (mode === 'rows') splitPane(workspace,project,'vertical',target(1));
+    else if (mode === 'grid') {
       splitPane(workspace,project,'horizontal',target(1));
       const [left,right]=panesIn(workspace.root);workspace.activeId=left.id;
       splitPane(workspace,project,'vertical',target(2));
@@ -387,7 +341,7 @@ export function installWorkspace(api) {
     if (selection?.type === 'block') {
       const block = board.blocks.find(b => b.id === selection.id);
       if (block) {
-        point = {x:block.position.x + api.blockWidth/2,y:block.position.y + api.blockHeight/2};
+        point = {x:block.position.x + api.blockWidth(block)/2,y:block.position.y + api.blockHeight/2};
         focus = dom.elements.blocks.querySelector(`[data-block-id="${CSS.escape(block.id)}"]`);
       }
     } else if (selection?.type === 'edge') {
@@ -395,7 +349,7 @@ export function installWorkspace(api) {
       const source = board.blocks.find(b => b.id === edge?.source.blockId);
       const target = board.blocks.find(b => b.id === edge?.target.blockId);
       if (source && target) {
-        point = {x:(source.position.x + target.position.x + api.blockWidth)/2,
+        point = {x:(source.position.x + api.blockWidth(source) + target.position.x)/2,
           y:(source.position.y + target.position.y + api.blockHeight)/2};
         focus = dom.elements.edges.querySelector(`.edge-hit[data-edge-id="${CSS.escape(edge.id)}"]`);
       }
@@ -423,14 +377,19 @@ export function installWorkspace(api) {
     }
   });
   // Explicit tours reference existing board-local blocks or edges, never implicit cross-board wires.
+  const tourShell = el('details','tour-shell');
+  tourShell.append(el('summary','','Guided tour'));
   const tourBox=el('div','tour-controls');
-  document.querySelector('.board-header').after(tourBox);
+  tourShell.append(tourBox);
+  document.querySelector('.board-header').after(tourShell);
   function renderTourControls(){
     tourBox.replaceChildren(); const project=api.project(), tours=project.tours??[];
     const picker=el('select','field-input');picker.setAttribute('aria-label','Guided architecture tour');
     picker.append(new Option('Select tour…',''));
     for(const tour of tours)picker.append(new Option(tour.title,tour.id));
-    if(!tours.some(t=>t.id===selectedTourId)){selectedTourId=null;tourIndex=-1;simulation?.selectTour(null);api.render();}
+    if(selectedTourId && !tours.some(t=>t.id===selectedTourId)){
+      selectedTourId=null;tourIndex=-1;simulation?.selectTour(null);
+    }
     picker.value=selectedTourId??'';
     picker.addEventListener('change',()=>{
       selectedTourId=picker.value||null;tourIndex=-1;simulation?.selectTour(selectedTourId);

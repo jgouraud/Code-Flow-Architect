@@ -530,7 +530,8 @@ button,input,textarea,select {
 }
 .block {
   position:absolute;
-  width:218px;
+  min-width:170px;
+  max-width:420px;
   height:104px;
   padding:12px 15px;
   border:1px solid #496188;
@@ -575,7 +576,7 @@ button,input,textarea,select {
   color:#f4f7fd;
   font-weight:750;
   letter-spacing:-.01em;
-  font-size:14px;
+  font-size:20px;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis
@@ -583,7 +584,7 @@ button,input,textarea,select {
 .block-description {
   margin-top:5px;
   color:#8196b7;
-  font-size:11px;
+  font-size:13px;
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap

@@ -7,9 +7,26 @@
   <meta name="description" content="CodeFlow Architect — design software systems as hierarchical diagrams." />
   <title>CodeFlow Architect</title>
   <link rel="stylesheet" href="./src/styles.css" />
+  <link rel="stylesheet" href="./src/visual-clean.css" />
 </head>
 <body>
-  <div id="app" class="app-shell">
+  <main id="welcome" class="welcome-page" aria-labelledby="welcome-title">
+    <div class="welcome-card">
+      <div class="welcome-eyebrow">CodeFlow Architect</div>
+      <h1 id="welcome-title">Map your code before you build it.</h1>
+      <p class="welcome-copy">Sketch components, connect their data flows and open any block to design its inner workings. No code runs here.</p>
+      <div class="welcome-choices" aria-label="Choose how to start">
+        <button id="continue-last" class="welcome-choice" type="button" hidden><span class="choice-symbol" aria-hidden="true">↺</span><span class="choice-label"><strong>Continue</strong><small>Resume your most recent local design.</small></span><span class="choice-arrow" aria-hidden="true">›</span></button>
+        <button id="start-empty" class="welcome-choice primary" type="button"><span class="choice-symbol" aria-hidden="true">＋</span><span class="choice-label"><strong>New board</strong><small>Start from a clean canvas.</small></span><span class="choice-arrow" aria-hidden="true">›</span></button>
+        <button id="start-example" class="welcome-choice" type="button"><span class="choice-symbol" aria-hidden="true">◇</span><span class="choice-label"><strong>Example</strong><small>Explore a connected, multi-level architecture.</small></span><span class="choice-arrow" aria-hidden="true">›</span></button>
+        <button id="start-template" class="welcome-choice" type="button"><span class="choice-symbol" aria-hidden="true">▤</span><span class="choice-label"><strong>Template</strong><small>Three connected blocks, ready to adapt.</small></span><span class="choice-arrow" aria-hidden="true">›</span></button>
+        <button id="start-import" class="welcome-choice" type="button"><span class="choice-symbol" aria-hidden="true">⇧</span><span class="choice-label"><strong>Import JSON</strong><small>Open a previously exported CodeFlow design.</small></span><span class="choice-arrow" aria-hidden="true">›</span></button>
+      </div>
+      <div class="welcome-footer"><button id="welcome-help" class="welcome-link" type="button">What JSON structure is required?</button></div>
+      <p id="welcome-error" class="welcome-error" role="alert" aria-live="polite"></p>
+    </div>
+  </main>
+  <div id="app" class="app-shell" hidden>
     <header class="topbar">
       <div class="brand"><div class="brand-mark" aria-hidden="true">⌘</div><strong>CodeFlow</strong><span class="brand-sub">Architect</span><span class="version">MVP</span></div>
       <div class="project-controls">
@@ -24,7 +41,7 @@
         <span class="toolbar-divider"></span>
         <button id="import" class="btn ghost" type="button">Import</button>
         <button id="export" class="btn ghost" type="button">Export JSON</button>
-        <button id="new-project" class="btn primary" type="button">+ New project</button>
+        <button id="new-project" class="btn primary" type="button">Choose project</button>
         <input type="file" id="import-file" accept=".json,application/json" class="sr-only" aria-label="Select project JSON file" />
       </div>
     </header>
@@ -33,7 +50,10 @@
         <div class="panel-heading"><div class="panel-heading-row"><h2>Block library</h2><button id="toggle-library" class="panel-toggle" type="button" aria-controls="library-body" aria-expanded="true" aria-label="Collapse block library" title="Collapse block library">‹</button></div><p>Drag onto the canvas or click to add</p></div>
         <div id="library-body" class="panel-body">
           <div class="library-search-wrap"><span aria-hidden="true">⌕</span><input id="library-search" type="search" placeholder="Search blocks..." aria-label="Search block library" /></div>
-          <div id="level-filters" class="level-filters" aria-label="Library abstraction level filters"></div>
+          <div class="library-zone-actions" aria-label="Add architecture zone">
+            <button class="btn small ghost" id="add-frontend-zone" type="button">+ Frontend zone</button>
+            <button class="btn small ghost" id="add-backend-zone" type="button">+ Backend zone</button>
+          </div>
           <div id="library-items" class="library-items"></div>
           <div class="library-footer"><div class="tip-icon" aria-hidden="true">✦</div><p><strong>Design, not execution.</strong> Every block can open another board for its internal structure.</p></div>
         </div>
@@ -46,11 +66,17 @@
               <summary class="btn small ghost">Nature key</summary>
               <ul id="nature-legend-list" class="nature-legend-list" aria-label="Block nature color key"></ul>
             </details>
-            <button class="btn small ghost" id="add-frontend-zone" type="button">+ Frontend zone</button>
-            <button class="btn small ghost" id="add-backend-zone" type="button">+ Backend zone</button>
-            <button class="btn small ghost" id="fit-view" type="button">Fit view</button>
             <button class="btn small ghost" id="center-view" type="button">Center</button>
           </div>
+        </div>
+        <div class="canvas-visual-toggles" role="group" aria-label="Connection visibility">
+          <button class="btn small ghost" id="toggle-error-arrows" type="button" aria-pressed="false" title="Show error arrows and error-only blocks">Errors</button>
+          <button class="btn small ghost" id="toggle-connection-nodes" type="button" aria-pressed="false" title="Show nodes and labels along connection arrows">Nodes</button>
+        </div>
+        <div id="floating-board-tools" class="floating-board-tools" aria-label="Drawing board tools">
+          <div id="floating-workspace-tools" class="workspace-tools"></div>
+          <button class="btn small ghost" id="fit-view" type="button">Fit view</button>
+          <button class="btn small ghost" id="fullscreen-toggle" type="button" aria-pressed="false" title="Show drawing board full screen">Full screen</button>
         </div>
         <div class="canvas-area" id="canvas" tabindex="0" aria-label="Architecture drawing board. Drag blocks or use library buttons to add them.">
           <div id="scene" class="scene">
@@ -59,14 +85,38 @@
             <div id="blocks-layer" class="blocks-layer"></div>
           </div>
           <div id="empty-state" class="empty-state" hidden><div class="empty-glyph">◇</div><h3>Start designing this board</h3><p>Drag a component here, or click a block in the library to add it.</p><button id="add-blank" class="btn primary" type="button">+ Add blank block</button></div>
-          <div class="canvas-hint" id="canvas-hint">Double-click a block to decompose · Connect output → input · Configure up to 32 ports on all four sides in Inspector</div>
-          <div class="canvas-bottom"><div class="canvas-legend"><span><i class="legend-dot data"></i>Data</span><span><i class="legend-dot control"></i>Control</span><span><i class="legend-dot error"></i>Error</span></div><div class="zoom-controls"><button id="zoom-out" title="Zoom out" aria-label="Zoom out" type="button">−</button><output id="zoom-label" aria-live="off">100%</output><button id="zoom-in" title="Zoom in" aria-label="Zoom in" type="button">+</button></div></div>
+          <div class="canvas-bottom"><div class="zoom-controls"><button id="zoom-out" title="Zoom out" aria-label="Zoom out" type="button">−</button><output id="zoom-label" aria-live="off">100%</output><button id="zoom-in" title="Zoom in" aria-label="Zoom in" type="button">+</button></div></div>
         </div>
         <div class="statusbar"><span id="board-counts">0 blocks · 0 connections</span><span id="status-message" role="status">Ready</span><span>LOCAL-FIRST · NO CODE EXECUTION</span></div>
       </main>
-      <aside class="inspector-panel" aria-label="Properties inspector"><div class="inspector-head"><div class="panel-heading-row"><h2>Inspector</h2><button id="toggle-inspector" class="panel-toggle" type="button" aria-controls="inspector-content" aria-expanded="true" aria-label="Collapse inspector" title="Collapse inspector">›</button></div></div><div id="inspector-content"></div></aside>
     </div>
   </div>
+  <dialog id="inspector-dialog" class="inspector-dialog" aria-labelledby="inspector-heading">
+    <div class="inspector-dialog-header"><h2 id="inspector-heading">Inspector</h2><button id="close-inspector" class="inspector-close" type="button" aria-label="Close inspector">×</button></div>
+    <div id="inspector-content"></div>
+  </dialog>
+  <dialog id="json-help-dialog" class="json-help-dialog" aria-labelledby="json-help-title">
+    <h2 id="json-help-title">CodeFlow JSON format</h2>
+    <p>Use a CodeFlow export whenever possible. Imports must be UTF-8 JSON, at most 2 MB, with <code>schemaVersion: 2</code>. Valid version 1 exports are migrated without changing the source file.</p>
+    <p>This is the smallest valid empty project:</p>
+    <pre><code>{
+  "schemaVersion": 2,
+  "id": "example-project",
+  "name": "Example architecture",
+  "rootBoardId": "board-root",
+  "boards": {
+    "board-root": {
+      "id": "board-root",
+      "name": "System architecture",
+      "ownerBlockId": null,
+      "blocks": [], "edges": [], "zones": [],
+      "viewport": { "x": 0, "y": 0, "zoom": 1 }
+    }
+  }
+}</code></pre>
+    <p>For diagrams, each board may contain blocks with unique IDs, labels, levels, positions and named input/output ports. Edges reference valid source and destination port IDs; child boards point back to their owning block. Edge annotations may include <code>caption</code>, <code>dataType</code>, <code>format</code>, <code>description</code> and <code>schemaRef</code>. Saved layouts and tours are optional.</p>
+    <div class="dialog-actions"><button id="close-json-help" class="btn primary" type="button">Got it</button></div>
+  </dialog>
   <script type="module" src="./src/app.js"></script>
 </body>
 </html>
