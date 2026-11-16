@@ -116,6 +116,7 @@ function renderLibrary() {
     if (key !== group) { elements.library.append(element('div', 'library-group', key)); group = key; }
     const item = element('button', 'template-row');
     item.type = 'button'; item.draggable = true; item.title = `Add ${template.label} to canvas`;
+    item.dataset.nature = template.nature ?? 'component';
     const glyph = element('span', `template-icon category-${template.category.toLowerCase()}`, template.icon);
     glyph.setAttribute('aria-hidden', 'true');
     const text = element('span', 'template-info');
@@ -196,7 +197,7 @@ function renderBlocks() {
     node.setAttribute('aria-label', `${block.label}, ${block.level} ${nature}${block.dataFormat && nature === 'data' ? `, ${block.dataFormat}` : ''}${block.childBoardId ? ', has decomposition' : ''}`);
     const top = element('div','block-top');
     const icon = element('span','block-icon',getTemplateIcon(block)); icon.setAttribute('aria-hidden','true');
-    top.append(icon,element('span','block-level',block.level), element('span','block-nature',nature === 'data' ? (block.dataFormat ?? 'data') : nature));
+    top.append(icon,element('span','block-level',block.level), element('span','block-nature',nature === 'data' && block.dataFormat ? `data · ${block.dataFormat}` : nature));
     if (block.childBoardId) { const mark = element('span','decomposed-mark','▤'); mark.title = 'Has decomposition'; top.append(mark); }
     const name = element('div','block-name',block.label);
     const description = element('div','block-description',block.sourceRef || block.description || 'Architectural component');
@@ -607,4 +608,10 @@ function connectEvents() {
 }
 
 project=load();currentBoardId=project.rootBoardId;
-setupTheme();connectEvents();renderLibrary();render();
+setupTheme();connectEvents();renderLibrary();
+for (const nature of BLOCK_NATURES) {
+  const entry = element('li', '', nature[0].toUpperCase() + nature.slice(1));
+  entry.dataset.nature = nature;
+  $('nature-legend-list').append(entry);
+}
+render();

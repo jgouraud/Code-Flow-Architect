@@ -29,6 +29,7 @@ npm run check
 - Use **Source path / symbol** to annotate an entity (for example `src/model.js#makeBlock`). Choose a block's **nature** (file, module, class, function, method, interface, service or data) in the inspector; data blocks also have a format (database, CSV, JSON, Parquet, XML, YAML, binary or other). The library includes ready-made templates.
 - Add a **Frontend zone** or **Backend zone** from the board toolbar. Drag or resize its outline to encompass blocks; zone position, label and size are editable and undoable. Zones visually group blocks but do not alter board ownership or move enclosed blocks.
 - Collapse either side panel to expand the canvas; switch **Light/Dark** from the top bar. Theme choice is stored separately from the project.
+- The **Nature key** on the board toolbar explains the nine block colors. Each block has a colored edge and a text nature badge, independent of frontend/backend zones and data/control/error connection colors.
 - Double-click a block, or press **Enter** on a focused block, to create/open its decomposition board. Breadcrumbs navigate back to parent boards.
 - Delete a selected block or connection with **Delete**; undo with Ctrl/⌘+Z and redo with Ctrl/⌘+Shift+Z. Focused blocks can be nudged with arrow keys (Shift = larger step).
 - Projects save to this browser's `localStorage` automatically. Use **Export JSON** to back up or share a project, and **Import** to reopen it elsewhere. Browser storage is not a remote backup.
