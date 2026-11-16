@@ -41,7 +41,16 @@
       <main class="main-panel">
         <div class="board-header">
           <div class="board-nav"><nav id="breadcrumbs" aria-label="Board breadcrumbs"></nav><div class="board-subheading" id="board-meta">System architecture</div></div>
-          <div class="board-header-actions"><button class="btn small ghost" id="add-frontend-zone" type="button">+ Frontend zone</button><button class="btn small ghost" id="add-backend-zone" type="button">+ Backend zone</button><button class="btn small ghost" id="fit-view" type="button">Fit view</button><button class="btn small ghost" id="center-view" type="button">Center</button></div>
+          <div class="board-header-actions">
+            <details class="nature-legend">
+              <summary class="btn small ghost">Nature key</summary>
+              <ul id="nature-legend-list" class="nature-legend-list" aria-label="Block nature color key"></ul>
+            </details>
+            <button class="btn small ghost" id="add-frontend-zone" type="button">+ Frontend zone</button>
+            <button class="btn small ghost" id="add-backend-zone" type="button">+ Backend zone</button>
+            <button class="btn small ghost" id="fit-view" type="button">Fit view</button>
+            <button class="btn small ghost" id="center-view" type="button">Center</button>
+          </div>
         </div>
         <div class="canvas-area" id="canvas" tabindex="0" aria-label="Architecture drawing board. Drag blocks or use library buttons to add them.">
           <div id="scene" class="scene">
