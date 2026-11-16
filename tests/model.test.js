@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createEmptyProject, addBlock, createDecomposition, connectBlocks, deleteBlock, validateProject, boardPath, createDemoProject } from '../src/model.js';
+import { createEmptyProject, addBlock, addZone, createDecomposition, connectBlocks, deleteBlock, validateProject, boardPath, createDemoProject } from '../src/model.js';
 
 test('demo architecture contains three nested levels and valid connections', () => {
   const project = createDemoProject();
@@ -58,4 +58,40 @@ test('JSON round-trip preserves nested boards and valid project', () => {
   const parsed=JSON.parse(serialized);
   assert.equal(validateProject(parsed),null);
   assert.equal(Object.keys(parsed.boards).length,3);
+});
+
+test('code and data templates carry their nature and data format through export', () => {
+  const project = createEmptyProject();
+  const file = addBlock(project, project.rootBoardId, 'source-file', {x:0,y:0});
+  const csv = addBlock(project, project.rootBoardId, 'csv-dataset', {x:250,y:0});
+  const database = addBlock(project, project.rootBoardId, 'database', {x:500,y:0});
+  assert.equal(file.nature, 'file');
+  assert.equal(csv.nature, 'data');
+  assert.equal(csv.dataFormat, 'csv');
+  assert.equal(database.dataFormat, 'database');
+  file.sourceRef = 'src/model.js#makeBlock';
+  assert.equal(file.sourceRef, 'src/model.js#makeBlock');
+  assert.equal(validateProject(JSON.parse(JSON.stringify(project))), null);
+});
+
+test('zones are board-local, validated and optional in legacy v1 projects', () => {
+  const project = createEmptyProject();
+  const board = project.boards[project.rootBoardId];
+  const frontend = addZone(project, project.rootBoardId, 'frontend', {x:20,y:30});
+  const backend = addZone(project, project.rootBoardId, 'backend', {x:400,y:30});
+  assert.equal(frontend.kind, 'frontend');
+  assert.equal(backend.kind, 'backend');
+  assert.equal(board.zones.length, 2);
+  assert.equal(validateProject(project), null);
+  const malformed = structuredClone(project);
+  malformed.boards[malformed.rootBoardId].zones[0].width = -1;
+  assert.match(validateProject(malformed), /zone/i);
+  const unknownNature = structuredClone(project);
+  const block = addBlock(unknownNature, unknownNature.rootBoardId, 'source-file', {x:0,y:0});
+  block.nature = 'executable-code';
+  assert.match(validateProject(unknownNature), /Invalid or duplicate block/);
+  const legacy = structuredClone(project);
+  delete legacy.boards[legacy.rootBoardId].zones;
+  assert.equal(validateProject(legacy), null);
+  assert.throws(() => addZone(project, project.rootBoardId, 'untrusted', {x:0,y:0}), /Unsupported zone/);
 });

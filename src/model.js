@@ -1,6 +1,9 @@
 import { DEFAULT_TEMPLATE, findTemplate } from './library.js';
 
 export const SCHEMA_VERSION = 1;
+export const BLOCK_NATURES = ['component', 'file', 'module', 'class', 'function', 'method', 'interface', 'service', 'data'];
+export const DATA_FORMATS = ['database', 'csv', 'json', 'parquet', 'xml', 'yaml', 'binary', 'other'];
+export const ZONE_KINDS = ['frontend', 'backend'];
 export const BLOCK_WIDTH = 218;
 export const BLOCK_HEIGHT = 104;
 export const STORAGE_KEY = 'codeflow-architect-project-v1';
@@ -10,7 +13,7 @@ export function newId() { return globalThis.crypto?.randomUUID?.() ?? `id-${Date
 export function createEmptyProject(name = 'Untitled project') {
   return {
     schemaVersion: SCHEMA_VERSION, id: newId(), name, rootBoardId: 'board-root',
-    boards: { 'board-root': { id: 'board-root', name: 'System architecture', ownerBlockId: null, blocks: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } } }
+    boards: { 'board-root': { id: 'board-root', name: 'System architecture', ownerBlockId: null, blocks: [], edges: [], zones: [], viewport: { x: 0, y: 0, zoom: 1 } } }
   };
 }
 
@@ -19,6 +22,7 @@ export function makeBlock(templateId, position, id = newId()) {
   return {
     id, templateId: template.id, label: template.label, level: template.level,
     category: template.category, description: template.description,
+    nature: template.nature, dataFormat: template.dataFormat, sourceRef: '',
     position: { x: Math.round(position.x), y: Math.round(position.y) }, childBoardId: null,
     ports: [
       { id: `${id}-in`, name: 'Input', direction: 'input', kind: 'data' },
@@ -35,6 +39,18 @@ export function addBlock(project, boardId, templateId, position) {
   return block;
 }
 
+export function addZone(project, boardId, kind, position) {
+  const board = project.boards[boardId];
+  if (!board) throw new Error('Board does not exist');
+  if (!ZONE_KINDS.includes(kind)) throw new Error('Unsupported zone type');
+  const zone = {
+    id: newId(), kind, label: `${kind === 'frontend' ? 'Frontend' : 'Backend'} zone`,
+    position: { x: Math.round(position.x), y: Math.round(position.y) }, width: 600, height: 300
+  };
+  (board.zones ??= []).push(zone);
+  return zone;
+}
+
 export function findBlock(project, blockId) {
   for (const board of Object.values(project.boards)) {
     const block = board.blocks.find(item => item.id === blockId);
@@ -49,7 +65,7 @@ export function createDecomposition(project, boardId, blockId) {
   if (!block) throw new Error('Block does not exist on this board');
   if (block.childBoardId) return block.childBoardId;
   const id = newId();
-  project.boards[id] = { id, name: block.label, ownerBlockId: blockId, blocks: [], edges: [], viewport: { x: 45, y: 95, zoom: .78 } };
+  project.boards[id] = { id, name: block.label, ownerBlockId: blockId, blocks: [], edges: [], zones: [], viewport: { x: 45, y: 95, zoom: .78 } };
   block.childBoardId = id;
   return id;
 }
@@ -112,12 +128,21 @@ export function validateProject(value) {
   if (!value.rootBoardId || !Object.hasOwn(value.boards, value.rootBoardId)) return 'Missing root board';
   const ids = new Set();
   const childIds = new Set();
+  const zoneIds = new Set();
   for (const board of boards) {
     if (!board || typeof board.id !== 'string' || value.boards[board.id] !== board || typeof board.name !== 'string' || board.name.length > 200 || (board.ownerBlockId !== null && typeof board.ownerBlockId !== 'string') || !Array.isArray(board.blocks) || !Array.isArray(board.edges)) return 'Invalid board structure';
     if (board.blocks.length > 2000 || board.edges.length > 5000) return 'Board exceeds size limit';
     if (!board.viewport || !['x','y','zoom'].every(key => Number.isFinite(board.viewport[key])) || board.viewport.zoom <= 0 || board.viewport.zoom > 10) return 'Invalid board viewport';
+    // Older v1 projects have no zones; a missing array is intentionally valid.
+    if (board.zones !== undefined) {
+      if (!Array.isArray(board.zones) || board.zones.length > 100) return 'Invalid zones';
+      for (const zone of board.zones) {
+        if (!zone || typeof zone.id !== 'string' || zoneIds.has(zone.id) || !ZONE_KINDS.includes(zone.kind) || typeof zone.label !== 'string' || zone.label.length > 120 || !zone.position || !Number.isFinite(zone.position.x) || !Number.isFinite(zone.position.y) || !Number.isFinite(zone.width) || !Number.isFinite(zone.height) || zone.width < 180 || zone.height < 120 || zone.width > 10000 || zone.height > 10000) return 'Invalid zone';
+        zoneIds.add(zone.id);
+      }
+    }
     for (const block of board.blocks) {
-      if (!block || typeof block.id !== 'string' || ids.has(block.id) || typeof block.label !== 'string' || block.label.length > 200 || typeof block.description !== 'string' || block.description.length > 2000 || typeof block.templateId !== 'string' || typeof block.category !== 'string' || !['H0','H1','H2','H3'].includes(block.level) || (block.childBoardId !== null && typeof block.childBoardId !== 'string')) return 'Invalid or duplicate block';
+      if (!block || typeof block.id !== 'string' || ids.has(block.id) || typeof block.label !== 'string' || block.label.length > 200 || typeof block.description !== 'string' || block.description.length > 2000 || typeof block.templateId !== 'string' || typeof block.category !== 'string' || !['H0','H1','H2','H3'].includes(block.level) || (block.childBoardId !== null && typeof block.childBoardId !== 'string') || (block.nature !== undefined && !BLOCK_NATURES.includes(block.nature)) || (block.dataFormat !== undefined && block.dataFormat !== null && !DATA_FORMATS.includes(block.dataFormat)) || (block.sourceRef !== undefined && (typeof block.sourceRef !== 'string' || block.sourceRef.length > 500))) return 'Invalid or duplicate block';
       ids.add(block.id);
       if (!block.position || !Number.isFinite(block.position.x) || !Number.isFinite(block.position.y)) return 'Invalid block position';
       if (!Array.isArray(block.ports) || block.ports.length !== 2 || !['input','output'].every(direction => block.ports.some(port => port && port.direction === direction && typeof port.id === 'string' && port.id.length <= 150 && typeof port.name === 'string' && port.name.length <= 100 && ['data','control','error'].includes(port.kind)))) return 'Invalid block ports';
@@ -164,6 +189,8 @@ export function createDemoProject() {
   backend.label = 'Backend acceptance';
   const prep = addBlock(project,inputBoard,'clean-data',{x:700,y:160});
   prep.label = 'Data preprocessing';
+  addZone(project, inputBoard, 'frontend', {x:35,y:95}).width = 290;
+  addZone(project, inputBoard, 'backend', {x:350,y:95});
   connectBlocks(project,inputBoard,frontend.id,backend.id);
   connectBlocks(project,inputBoard,backend.id,prep.id);
   const prepBoard = createDecomposition(project,inputBoard,prep.id);

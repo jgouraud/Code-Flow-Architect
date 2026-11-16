@@ -3,7 +3,7 @@ const definitions = [
   ['H0','System','Architecture','System boundary','▣','System'],
   ['H0','Frontend application','Architecture','User-facing client','◫','Frontend'],
   ['H0','Backend service','Architecture','Service boundary','◈','Backend'],
-  ['H0','Database','Architecture','Durable data storage','▤','Data'],
+  ['H0','Database','Architecture','Durable data storage','▤','Data','data','database'],
   ['H0','External API','Architecture','Third-party integration','⇄','API'],
   ['H0','Orchestrator','Architecture','Coordinates workflows','⤴','Control'],
   ['H0','Agent system','Architecture','Autonomous task system','✧','AI'],
@@ -45,11 +45,24 @@ const definitions = [
   ['H3','Calculate metric','Primitive','Compute numeric metric','∑','Analysis'],
   ['H3','Cache lookup','Primitive','Read cached value','▧','Storage'],
   ['H3','Serialize object','Primitive','Convert object to transport format','{}','Data'],
-  ['H3','Count tokens','Primitive','Estimate token usage','♯','AI']
+  ['H3','Count tokens','Primitive','Estimate token usage','♯','AI'],
+  ['H2','Source file','Code','File containing source code','▧','Code','file'],
+  ['H2','Module','Code','Importable code unit','▦','Code','module'],
+  ['H2','Class','Code','Class and its responsibilities','▣','Code','class'],
+  ['H2','Function','Code','Callable unit of behavior','ƒ','Code','function'],
+  ['H3','Class method','Code','Method belonging to a class','ƒ','Code','method'],
+  ['H2','Interface','Code','Public contract of a module','◇','Code','interface'],
+  ['H2','Service','Code','Runnable service or process','◈','Backend','service'],
+  ['H1','CSV dataset','Data artifact','Delimited tabular data','▤','Data','data','csv'],
+  ['H1','JSON document','Data artifact','Structured JSON document','{}','Data','data','json'],
+  ['H1','Parquet dataset','Data artifact','Columnar data storage','▥','Data','data','parquet'],
+  ['H1','XML document','Data artifact','XML structured data','<>','Data','data','xml'],
+  ['H1','YAML configuration','Data artifact','YAML configuration data','≡','Data','data','yaml'],
+  ['H1','Binary artifact','Data artifact','Opaque binary data','▨','Data','data','binary']
 ];
 
-export const BLOCK_TEMPLATES = definitions.map(([level, label, group, description, icon, category]) => ({
-  id: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'), level, label, group, description, icon, category
+export const BLOCK_TEMPLATES = definitions.map(([level, label, group, description, icon, category, nature = 'component', dataFormat = null]) => ({
+  id: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'), level, label, group, description, icon, category, nature, dataFormat
 }));
-export const DEFAULT_TEMPLATE = { id: 'blank-block', level: 'H1', label: 'New block', group: 'Custom', description: 'Describe this component', icon: '▣', category: 'Custom' };
+export const DEFAULT_TEMPLATE = { id: 'blank-block', level: 'H1', label: 'New block', group: 'Custom', description: 'Describe this component', icon: '▣', category: 'Custom', nature: 'component', dataFormat: null };
 export function findTemplate(id) { return BLOCK_TEMPLATES.find(template => template.id === id) ?? (id === DEFAULT_TEMPLATE.id ? DEFAULT_TEMPLATE : null); }

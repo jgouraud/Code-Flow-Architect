@@ -26,6 +26,9 @@ npm run check
 - Drag blocks to reposition them; drag the empty canvas to pan; scroll to zoom. Choose **Fit view** to center a board.
 - Connect blocks by dragging from the right/output port to another block's left/input port. Alternatively, click an output port and then an input port. Use **Escape** to cancel.
 - Single-click a block or connection to edit its properties in the inspector. Select an edge to change its kind to data, control, or error.
+- Use **Source path / symbol** to annotate an entity (for example `src/model.js#makeBlock`). Choose a block's **nature** (file, module, class, function, method, interface, service or data) in the inspector; data blocks also have a format (database, CSV, JSON, Parquet, XML, YAML, binary or other). The library includes ready-made templates.
+- Add a **Frontend zone** or **Backend zone** from the board toolbar. Drag or resize its outline to encompass blocks; zone position, label and size are editable and undoable. Zones visually group blocks but do not alter board ownership or move enclosed blocks.
+- Collapse either side panel to expand the canvas; switch **Light/Dark** from the top bar. Theme choice is stored separately from the project.
 - Double-click a block, or press **Enter** on a focused block, to create/open its decomposition board. Breadcrumbs navigate back to parent boards.
 - Delete a selected block or connection with **Delete**; undo with Ctrl/⌘+Z and redo with Ctrl/⌘+Shift+Z. Focused blocks can be nudged with arrow keys (Shift = larger step).
 - Projects save to this browser's `localStorage` automatically. Use **Export JSON** to back up or share a project, and **Import** to reopen it elsewhere. Browser storage is not a remote backup.
@@ -46,7 +49,7 @@ For simplicity this MVP uses **plain JavaScript, native HTML, CSS, and SVG**, no
 
 ### Project data contract
 
-`schemaVersion: 1`, a `rootBoardId`, a map of `boards`, and per-board `blocks`/`edges`. A block's optional `childBoardId` points to an independently navigable board whose `ownerBlockId` points back to that block. Each block has one input and one output port in the MVP. Connections are board-local. Imported projects are checked for hierarchy cycles, dangling edges, malformed positions and ports, and size limits before replacing the current project. The project is persisted as one local JSON object.
+`schemaVersion: 1`, a `rootBoardId`, a map of `boards`, and per-board `blocks`/`edges`/`zones`. A block's optional `childBoardId` points to an independently navigable board whose `ownerBlockId` points back to that block. Blocks can carry optional `nature`, `dataFormat` and `sourceRef` fields; the latter identifies a repository path/symbol for documentation purposes. Board zones are optional in legacy v1 projects and do not change block ownership or connection endpoints. Each block has one input and one output port in the MVP. Connections are board-local. Imported projects are checked for hierarchy cycles, dangling edges, malformed positions and ports, zone bounds, and size limits before replacing the current project. The project is persisted as one local JSON object.
 
 ### Known MVP limitations
 
@@ -69,6 +72,10 @@ The bundled `AGENTS.md`, `.agents/skills`, `docs/agent-policy`, and `tools` are 
 5. Reload the page after edits; confirm persisted names, positions, connections, and hierarchy.
 6. Try corrupt JSON and an unsupported schema version; confirm import is rejected without replacing current work.
 7. Verify smaller viewport layout and keyboard focus in a browser.
+8. Collapse and expand both side panels at narrow and wide viewports. Confirm focusable controls remain reachable and do not remain focusable while hidden.
+9. Switch light/dark themes, reload and verify the choice persists without changing exported project JSON.
+10. Add a source-file, class method, CSV dataset and database; edit their nature/format, then export/import and verify metadata persists.
+11. Add a frontend and backend zone, drag, resize and edit their size using the keyboard-accessible inspector; undo and redo, reload and verify placement. Deleting a zone must preserve enclosed blocks.
 
 ## CI
 
