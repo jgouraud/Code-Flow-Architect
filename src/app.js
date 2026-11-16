@@ -1,8 +1,9 @@
 import { BLOCK_TEMPLATES, DEFAULT_TEMPLATE, findTemplate } from './library.js';
 import {
-  BLOCK_WIDTH, BLOCK_HEIGHT, BLOCK_NATURES, DATA_FORMATS, STORAGE_KEY, addBlock, addZone,
+  BLOCK_WIDTH, BLOCK_HEIGHT, BLOCK_NATURES, DATA_FORMATS, STORAGE_KEY, LEGACY_STORAGE_KEY,
+  MAX_PORTS, PORT_SIDES, addAnnotation, addPort, removePort, addBlock, addZone,
   boardPath, connectBlocks, createDecomposition, createDemoProject, createEmptyProject,
-  deleteBlock, findBlock, validateProject
+  deleteBlock, findBlock, migrateProject, validateProject
 } from './model.js';
 
 const $ = id => document.getElementById(id);
@@ -16,7 +17,7 @@ let project;
 let currentBoardId;
 let selected = null;
 let libraryLevel = 'All';
-let pendingSourceId = null;
+let pendingSource = null;
 let previewPoint = null;
 let undoStack = [];
 let redoStack = [];
@@ -57,11 +58,13 @@ function save() {
 }
 function load() {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    // Keep the v1 key untouched as a recoverable copy of a legacy project.
+    const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
     if (stored) {
       const candidate = JSON.parse(stored);
-      if (!validateProject(candidate)) return candidate;
-      message('Stored project was invalid; loaded an example instead.');
+      const error = validateProject(candidate);
+      if (!error) return migrateProject(candidate);
+      message(`Stored project was invalid (${error}); loaded an example instead.`);
     }
   } catch { message('Could not load local project; loaded an example instead.'); }
   return createDemoProject();
@@ -70,8 +73,11 @@ function board() { return project.boards[currentBoardId]; }
 function cloneProject() { return JSON.stringify(project); }
 function mutate(operation) {
   const snapshot = cloneProject();
-  try { operation(); }
-  catch (error) { project = JSON.parse(snapshot); message(error.message || 'Could not complete operation'); return false; }
+  try {
+    operation();
+    const invalid = validateProject(project);
+    if (invalid) throw new Error(invalid);
+  } catch (error) { project = JSON.parse(snapshot); message(error.message || 'Could not complete operation'); return false; }
   undoStack.push(snapshot);
   if (undoStack.length > 60) undoStack.shift();
   redoStack = [];
@@ -86,7 +92,7 @@ function travelHistory(direction) {
   dest.push(cloneProject());
   project = JSON.parse(source.pop());
   if (!project.boards[currentBoardId]) currentBoardId = project.rootBoardId;
-  selected = null; pendingSourceId = null;
+  selected = null; pendingSource = null;
   save(); render(); message(direction === 'undo' ? 'Undid last edit' : 'Redid last edit');
 }
 function element(tag, cls = '', text = '') {
@@ -202,15 +208,19 @@ function renderBlocks() {
     const name = element('div','block-name',block.label);
     const description = element('div','block-description',block.sourceRef || block.description || 'Architectural component');
     node.append(top,name,description);
-    for (const direction of ['input','output']) {
-      const port = block.ports.find(p => p.direction === direction);
-      const control = button('', `port ${direction} ${pendingSourceId && direction === 'input' ? 'connection-target' : ''}`, event => {
+    for (const port of block.ports) {
+      const control = button('', `port ${port.direction} side-${port.side} ${pendingSource && port.direction === 'input' ? 'connection-target' : ''}`, event => {
         event.stopPropagation();
-        if (direction === 'input' && pendingSourceId) completeConnection(pendingSourceId, block.id);
-        if (direction === 'output') { pendingSourceId = block.id; previewPoint = null; renderEdges(); message('Choose an input port to connect, or press Escape.'); }
-      }, `${direction === 'input' ? 'Input' : 'Output'} port: ${port.name}`);
-      control.setAttribute('aria-label', `${block.label} ${direction} port: ${port.name}`);
-      if (direction === 'output') control.addEventListener('pointerdown', event => startConnectionDrag(event, block.id));
+        if (port.direction === 'input' && pendingSource) completeConnection(pendingSource, block.id, port.id);
+        else if (port.direction === 'output') {
+          pendingSource = { blockId: block.id, portId: port.id }; previewPoint = null;
+          renderEdges(); message('Choose an input port to connect, or press Escape.');
+        }
+      }, `${port.direction} port: ${port.name}`);
+      control.style.setProperty('--port-offset', `${port.offset * 100}%`);
+      control.setAttribute('aria-label', `${block.label}, ${port.direction} ${port.kind} port ${port.name}, ${port.side} side${port.dataType ? `, ${port.dataType}` : ''}`);
+      control.dataset.portId = port.id;
+      if (port.direction === 'output') control.addEventListener('pointerdown', event => startConnectionDrag(event, block.id, port.id));
       node.append(control);
     }
     node.addEventListener('click', event => {
@@ -234,13 +244,27 @@ function renderBlocks() {
     elements.blocks.append(node);
   }
 }
-function edgePath(source, target) {
-  const sx = source.position.x + BLOCK_WIDTH;
-  const sy = source.position.y + BLOCK_HEIGHT / 2;
-  const tx = target.position.x;
-  const ty = target.position.y + BLOCK_HEIGHT / 2;
-  const bend = Math.max(70, Math.abs(tx-sx) * .48);
-  return `M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`;
+function portAnchor(block, port) {
+  const { x, y } = block.position;
+  const along = port.offset;
+  if (port.side === 'top') return { x: x + BLOCK_WIDTH * along, y, dx: 0, dy: -1 };
+  if (port.side === 'bottom') return { x: x + BLOCK_WIDTH * along, y: y + BLOCK_HEIGHT, dx: 0, dy: 1 };
+  if (port.side === 'left') return { x, y: y + BLOCK_HEIGHT * along, dx: -1, dy: 0 };
+  return { x: x + BLOCK_WIDTH, y: y + BLOCK_HEIGHT * along, dx: 1, dy: 0 };
+}
+function edgeGeometry(source, target) {
+  const span = Math.hypot(target.x - source.x, target.y - source.y);
+  const bend = Math.max(42, Math.min(180, span * .4));
+  const c1 = { x: source.x + source.dx * bend, y: source.y + source.dy * bend };
+  const c2 = { x: target.x + target.dx * bend, y: target.y + target.dy * bend };
+  return {
+    d: `M ${source.x} ${source.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${target.x} ${target.y}`,
+    at(t) {
+      const a = (1 - t) ** 3, b = 3 * (1 - t) ** 2 * t, c = 3 * (1 - t) * t ** 2, d = t ** 3;
+      return { x: a * source.x + b * c1.x + c * c2.x + d * target.x,
+        y: a * source.y + b * c1.y + c * c2.y + d * target.y };
+    }
+  };
 }
 function svg(tag, attributes) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -252,41 +276,61 @@ function renderEdges() {
   const current = board();
   const lookup = new Map(current.blocks.map(block => [block.id,block]));
   const palette = document.documentElement.dataset.theme === 'light' ? lightKindColor : kindColor;
+  const defs = svg('defs', {});
+  for (const [kind, color] of Object.entries(palette)) {
+    const marker = svg('marker', { id: `arrow-${kind}`, viewBox: '0 0 10 10', markerWidth: 11, markerHeight: 11,
+      refX: 9, refY: 5, orient: 'auto', markerUnits: 'userSpaceOnUse' });
+    marker.append(svg('path', { d: 'M 0 1 L 9 5 L 0 9 Z', fill: color }));
+    defs.append(marker);
+  }
+  elements.edges.append(defs);
   for (const edge of current.edges) {
     const source = lookup.get(edge.source.blockId), target = lookup.get(edge.target.blockId);
-    if (!source || !target) continue;
-    const d = edgePath(source,target);
+    const output = source?.ports.find(port => port.id === edge.source.portId);
+    const input = target?.ports.find(port => port.id === edge.target.portId);
+    if (!output || !input) continue;
+    const geometry = edgeGeometry(portAnchor(source, output), portAnchor(target, input));
     const color = palette[edge.kind] ?? palette.data;
     const isSelected = selected?.type === 'edge' && selected.id === edge.id;
-    const visible = svg('path',{d,stroke:color,'stroke-width':isSelected?3.5:2.5,fill:'none','stroke-dasharray': edge.kind === 'control' ? '7 6' : edge.kind === 'error' ? '3 6' : 'none',class:'visible-edge'});
-    const hit = svg('path',{d,stroke:'rgba(255,255,255,0.02)','stroke-width':18,fill:'none',class:'edge-hit',tabindex:'0',role:'button','aria-label':`Select ${edge.kind} connection`});
-    hit.addEventListener('click', event => {event.stopPropagation(); select({type:'edge',id:edge.id});});
-    hit.addEventListener('keydown', event => {if(event.key==='Enter' || event.key===' '){event.preventDefault();select({type:'edge',id:edge.id});}});
-    elements.edges.append(visible,hit);
-    const midX = (source.position.x + BLOCK_WIDTH + target.position.x) / 2;
-    const midY = (source.position.y + target.position.y) / 2 + BLOCK_HEIGHT / 2;
-    const midpoint = svg('circle', {
-      cx: midX, cy: midY, r: isSelected ? 9 : 7,
-      fill: document.documentElement.dataset.theme === 'light' ? '#ffffff' : '#182e4c', stroke: color, 'stroke-width': isSelected ? 3 : 2,
-      class: 'edge-midpoint', tabindex: '0', role: 'button',
-      'aria-label': `Select ${edge.kind} connection`
-    });
-    midpoint.addEventListener('click', event => { event.stopPropagation(); select({type:'edge',id:edge.id}); });
-    midpoint.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); }
-    });
-    elements.edges.append(midpoint);
+    const visible = svg('path', { d: geometry.d, stroke: color, 'stroke-width': isSelected ? 3.5 : 2.5,
+      fill: 'none', 'stroke-dasharray': edge.kind === 'control' ? '7 6' : edge.kind === 'error' ? '3 6' : 'none',
+      'marker-end': `url(#arrow-${edge.kind})`, class: 'visible-edge' });
+    const hit = svg('path', { d: geometry.d, stroke: 'transparent', 'stroke-width': 18,
+      fill: 'none', class: 'edge-hit', tabindex: '0', role: 'button',
+      'aria-label': `Select ${edge.kind} connection from ${source.label}, ${output.name} to ${target.label}, ${input.name}` });
+    hit.addEventListener('click', event => { event.stopPropagation(); select({type:'edge',id:edge.id}); });
+    hit.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); } });
+    elements.edges.append(visible, hit);
     if (edge.label) {
-      const text = svg('text',{x:midX,y:midY-14,fill:document.documentElement.dataset.theme === 'light' ? '#334b70' : '#cbd5e1','font-size':'12','text-anchor':'middle','pointer-events':'none'});
-      text.textContent = edge.label.slice(0,40);
+      const at = geometry.at(.5);
+      const text = svg('text', { x: at.x, y: at.y - 18, fill: document.documentElement.dataset.theme === 'light' ? '#334b70' : '#cbd5e1',
+        'font-size': 12, 'text-anchor': 'middle', 'pointer-events': 'none' });
+      text.textContent = edge.label.slice(0, 40);
       elements.edges.append(text);
     }
+    for (const note of edge.annotations) {
+      const at = geometry.at(note.at);
+      const label = `Annotation: ${note.caption || 'Untitled'}. ${note.dataType ? `Type ${note.dataType}.` : ''} Press Enter to inspect.`;
+      const dot = svg('circle', { cx: at.x, cy: at.y, r: isSelected ? 8 : 6, fill: color,
+        stroke: document.documentElement.dataset.theme === 'light' ? '#fff' : '#18243d', 'stroke-width': 2,
+        class: 'edge-note', tabindex: 0, role: 'button', 'aria-label': label });
+      dot.addEventListener('click', event => { event.stopPropagation(); select({ type:'edge', id:edge.id }); });
+      dot.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); } });
+      elements.edges.append(dot);
+      if (note.dataType) {
+        const badge = svg('text', { x: at.x + 10, y: at.y - 10, class:'edge-type', 'pointer-events':'none' });
+        badge.textContent = note.dataType.slice(0, 20);
+        elements.edges.append(badge);
+      }
+    }
   }
-  if (pendingSourceId) {
-    const source = lookup.get(pendingSourceId);
-    if (source && previewPoint) {
-      const d = edgePath(source,{position:{x:previewPoint.x,y:previewPoint.y-BLOCK_HEIGHT/2}});
-      elements.edges.append(svg('path',{d,stroke:'#89c0ff','stroke-width':2,fill:'none','stroke-dasharray':'7 5','pointer-events':'none'}));
+  if (pendingSource && previewPoint) {
+    const source = lookup.get(pendingSource.blockId);
+    const output = source?.ports.find(port => port.id === pendingSource.portId);
+    if (output) {
+      const start = portAnchor(source, output);
+      elements.edges.append(svg('path', { d: `M ${start.x} ${start.y} L ${previewPoint.x} ${previewPoint.y}`,
+        stroke: '#89c0ff', 'stroke-width': 2, fill: 'none', 'stroke-dasharray': '7 5', 'pointer-events': 'none' }));
     }
   }
 }
@@ -314,12 +358,31 @@ function renderInspector() {
   if (selected.type === 'edge') {
     const edge = board().edges.find(item => item.id===selected.id);
     if (!edge) {selected=null;renderInspector();return;}
-    area.append(element('span','eyebrow','SELECTED CONNECTION'),element('h3','inspector-title','Connection'));
+    area.append(element('span','eyebrow','SELECTED CONNECTION'),element('h3','inspector-title','Directed connection'));
+    const from = board().blocks.find(block => block.id === edge.source.blockId);
+    const to = board().blocks.find(block => block.id === edge.target.blockId);
+    const out = from?.ports.find(port => port.id === edge.source.portId);
+    const input = to?.ports.find(port => port.id === edge.target.portId);
+    area.append(element('p','inspector-copy', `${from?.label} · ${out?.name} (${out?.side}) → ${to?.label} · ${input?.name} (${input?.side})`));
+    area.append(element('p','inspector-copy', `Flow kind: ${edge.kind}. Source type: ${out?.dataType || 'unspecified'}. Target type: ${input?.dataType || 'unspecified'}.`));
     addSelectField(area,'Flow type',edge.kind,['data','control','error'],value=>mutate(()=>{edge.kind=value;}));
     addTextField(area,'Label',edge.label,value=>mutate(()=>{edge.label=value;}));
-    const actions = element('div','inspector-actions');
-    actions.append(button('Delete connection','btn danger',()=>{mutate(()=>{board().edges=board().edges.filter(item=>item.id!==edge.id);});selected=null;render();}));
-    area.append(actions);return;
+    area.append(element('div','inspector-divider'),element('h4','inspector-section-title','Connection annotations'));
+    for (const note of edge.annotations) {
+      const item = element('div','port-editor');
+      item.append(element('strong','',note.caption || 'Annotation'));
+      addNumberField(item,'Position along arrow (%)',Math.round(note.at*100),1,99,value=>mutate(()=>{note.at=value/100;}));
+      addTextField(item,'Caption',note.caption,value=>mutate(()=>{note.caption=value;}),200);
+      addTextField(item,'Data type',note.dataType,value=>mutate(()=>{note.dataType=value;}),120);
+      addTextField(item,'Format',note.format,value=>mutate(()=>{note.format=value;}),200);
+      addTextareaField(item,'Description',note.description,value=>mutate(()=>{note.description=value;}));
+      addTextField(item,'Schema reference',note.schemaRef ?? '',value=>mutate(()=>{note.schemaRef=value;}),500);
+      item.append(button('Remove annotation','btn danger small',()=>mutate(()=>{edge.annotations=edge.annotations.filter(other=>other.id!==note.id);})))
+      area.append(item);
+    }
+    area.append(button('+ Annotation','btn wide accent',()=>mutate(()=>addAnnotation(project,currentBoardId,edge.id, .5))));
+    area.append(button('Delete connection','btn danger wide',()=>{mutate(()=>{board().edges=board().edges.filter(item=>item.id!==edge.id);});selected=null;render();}));
+    return;
   }
   const entry = findBlock(project,selected.id);
   if (!entry || entry.board.id!==currentBoardId) {selected=null;renderInspector();return;}
@@ -335,19 +398,50 @@ function renderInspector() {
   if ((block.nature ?? 'component') === 'data') addSelectField(area,'Data format',block.dataFormat ?? 'other',DATA_FORMATS,value=>mutate(()=>{block.dataFormat=value;}));
   area.append(element('div','inspector-divider'));
   area.append(element('h4','inspector-section-title','Interface contract'));
-  const input = block.ports.find(port=>port.direction==='input');
-  const output = block.ports.find(port=>port.direction==='output');
-  addTextField(area,'Input port',input.name,value=>mutate(()=>{input.name=value.slice(0,80)||'Input';}));
-  addTextField(area,'Output port',output.name,value=>mutate(()=>{output.name=value.slice(0,80)||'Output';}));
+  area.append(element('p','inspector-copy', `${block.ports.length} / ${MAX_PORTS} ports. Select a port to begin a directed connection. Positions use 0–100% along the chosen side.`));
+  for (const port of block.ports) {
+    const editor = element('div','port-editor');
+    editor.append(element('strong','',`${port.name} · ${port.direction}`));
+    addTextField(editor,'Name',port.name,value=>mutate(()=>{port.name=value;}),100);
+    addSelectField(editor,'Direction',port.direction,['input','output'],value=>changePort(block,port,'direction',value));
+    addSelectField(editor,'Side',port.side,PORT_SIDES,value=>mutate(()=>{port.side=value;}));
+    addNumberField(editor,'Position on side (%)',Math.round(port.offset*100),0,100,value=>mutate(()=>{port.offset=value/100;}));
+    addSelectField(editor,'Flow type',port.kind,['data','control','error'],value=>mutate(()=>{port.kind=value;}));
+    addTextField(editor,'Data type',port.dataType ?? '',value=>mutate(()=>{port.dataType=value;}),120);
+    const actions = element('div','port-actions');
+    actions.append(button('↑','btn ghost small',()=>mutate(()=>{const i=block.ports.indexOf(port);if(i>0)[block.ports[i-1],block.ports[i]]=[block.ports[i],block.ports[i-1]];}),'Move port up'));
+    actions.append(button('↓','btn ghost small',()=>mutate(()=>{const i=block.ports.indexOf(port);if(i<block.ports.length-1)[block.ports[i+1],block.ports[i]]=[block.ports[i],block.ports[i+1]];}),'Move port down'));
+    actions.append(button('Remove','btn danger small',()=>{
+      const count=board().edges.filter(edge=>(edge.source.blockId===block.id&&edge.source.portId===port.id)||(edge.target.blockId===block.id&&edge.target.portId===port.id)).length;
+      if(count && !confirm(`Remove this port and its ${count} connection(s)?`)) return;
+      mutate(()=>removePort(project,currentBoardId,block.id,port.id));
+    }));
+    editor.append(actions);area.append(editor);
+  }
+  const additions=element('div','port-actions');
+  for(const side of PORT_SIDES){additions.append(button(`+ ${side}`,'btn ghost small',()=>mutate(()=>addPort(project,currentBoardId,block.id,side))));}
+  area.append(additions);
   area.append(element('div','inspector-divider'));
   area.append(element('h4','inspector-section-title','Decomposition'));
   area.append(element('p','inspector-copy', block.childBoardId ? 'This block has a child board. Open it to edit the internal workflow.' : 'Create a child board to describe how this component works internally.'));
   area.append(button(block.childBoardId?'↗ Open child board':'+ Create decomposition','btn wide accent',()=>openDecomposition(block.id)));
   area.append(button('Delete block','btn danger wide',()=>{const id=block.id;mutate(()=>deleteBlock(project,currentBoardId,id));selected=null;render();}));
 }
-function addTextField(parent,label,value,onSave) {
+function changePort(block, port, key, value) {
+  if (key === 'direction') {
+    const count = board().edges.filter(edge => (edge.source.blockId === block.id && edge.source.portId === port.id) ||
+      (edge.target.blockId === block.id && edge.target.portId === port.id)).length;
+    if (count && !confirm(`Change direction and delete ${count} affected connection(s)?`)) { renderInspector(); return; }
+    mutate(() => {
+      board().edges = board().edges.filter(edge => !((edge.source.blockId === block.id && edge.source.portId === port.id) ||
+        (edge.target.blockId === block.id && edge.target.portId === port.id)));
+      port.direction = value;
+    });
+  }
+}
+function addTextField(parent,label,value,onSave,maxLength=200) {
   const wrapper=element('label','field');wrapper.append(element('span','field-label',label));
-  const input=element('input','field-input');input.type='text';input.value=value;input.maxLength=200;
+  const input=element('input','field-input');input.type='text';input.value=value;input.maxLength=maxLength;
   input.addEventListener('change',()=>{if(input.value!==value)onSave(input.value);});wrapper.append(input);parent.append(wrapper);
 }
 function addNumberField(parent,label,value,min,max,onSave) {
@@ -392,7 +486,7 @@ function select(next) {
 }
 function openBoard(boardId) {
   if(!project.boards[boardId])return;
-  currentBoardId=boardId;selected=null;pendingSourceId=null;previewPoint=null;
+  currentBoardId=boardId;selected=null;pendingSource=null;previewPoint=null;
   render();elements.canvas.scrollLeft = 0;elements.canvas.scrollTop = 0;
   $('breadcrumbs').querySelector('[aria-current="page"]')?.focus({preventScroll:true});
   message(`Opened ${board().name}`);
@@ -405,9 +499,9 @@ function openDecomposition(blockId) {
   else mutate(()=>{nextId=createDecomposition(project,currentBoardId,blockId);});
   openBoard(nextId);
 }
-function completeConnection(sourceId,targetId) {
-  pendingSourceId=null;previewPoint=null;
-  const ok=mutate(()=>connectBlocks(project,currentBoardId,sourceId,targetId));
+function completeConnection(source, targetId, targetPortId) {
+  pendingSource=null;previewPoint=null;
+  const ok=mutate(()=>connectBlocks(project,currentBoardId,source.blockId,targetId,'data',source.portId,targetPortId));
   if(ok)message('Connection created');
   else renderEdges();
 }
@@ -415,9 +509,9 @@ function worldPointFromScreen(clientX,clientY) {
   const rect=elements.canvas.getBoundingClientRect();const {x,y,zoom}=board().viewport;
   return {x:(clientX-rect.left-x)/zoom,y:(clientY-rect.top-y)/zoom};
 }
-function startConnectionDrag(event,sourceId) {
+function startConnectionDrag(event, sourceId, sourcePortId) {
   if(event.button!==0)return;
-  event.stopPropagation();pendingSourceId=sourceId;
+  event.stopPropagation();pendingSource={blockId:sourceId,portId:sourcePortId};
   const sx=event.clientX,sy=event.clientY;
   let moved=false;
   const move=e=>{if(Math.hypot(e.clientX-sx,e.clientY-sy)>6)moved=true;previewPoint=worldPointFromScreen(e.clientX,e.clientY);renderEdges();};
@@ -428,12 +522,12 @@ function startConnectionDrag(event,sourceId) {
     if(moved){
       const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('.port.input');
       const targetId=target?.closest('.block')?.dataset.blockId;
-      if(targetId){completeConnection(sourceId,targetId);return;}
-      pendingSourceId=null;message('Connect by dropping on an input port.');
+      if(targetId){completeConnection({blockId:sourceId,portId:sourcePortId},targetId,target.dataset.portId);return;}
+      pendingSource=null;message('Connect by dropping on an input port.');
     }
     renderEdges();
   };
-  const cancel=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);pendingSourceId=null;previewPoint=null;renderEdges();};
+  const cancel=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);pendingSource=null;previewPoint=null;renderEdges();};
   window.addEventListener('pointermove',move);window.addEventListener('pointerup',up,{once:true});window.addEventListener('pointercancel',cancel,{once:true});
 }
 function startBlockDrag(event,block) {
@@ -552,7 +646,7 @@ function connectEvents() {
   $('zoom-out').addEventListener('click',()=>zoomTo(board().viewport.zoom/1.15));
   $('new-project').addEventListener('click',()=>{
     if(!confirm('Create a blank project? Export your current project first if you need a backup.'))return;
-    project=createEmptyProject();currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSourceId=null;save();render();message('New blank project created');
+    project=createEmptyProject();currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSource=null;save();render();message('New blank project created');
   });
   $('export').addEventListener('click',()=>{
     const blob=new Blob([JSON.stringify(project,null,2)],{type:'application/json'});
@@ -568,7 +662,8 @@ function connectEvents() {
     try{
       const candidate=JSON.parse(await file.text());const error=validateProject(candidate);
       if(error)throw new Error(error);
-      project=candidate;currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSourceId=null;save();render();message('Project imported successfully');
+      project=migrateProject(candidate);currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSource=null;save();render();
+      message(candidate.schemaVersion===1?'Legacy v1 project migrated to v2. Original import file remains unchanged.':'Project imported successfully');
     }catch(error){message(`Import failed: ${error.message}`);}
   });
   elements.canvas.addEventListener('dragover',event=>{event.preventDefault();event.dataTransfer.dropEffect='copy';elements.canvas.classList.add('drag-over');});
@@ -581,7 +676,7 @@ function connectEvents() {
     addTemplate(templateId,{x:point.x-BLOCK_WIDTH/2,y:point.y-BLOCK_HEIGHT/2});
   });
   elements.canvas.addEventListener('pointerdown',event=>{
-    if(event.button!==0 || event.target.closest('.block') || event.target.closest('.zone') || event.target.closest('.edge-hit') || event.target.closest('button'))return;
+    if(event.button!==0 || event.target.closest('.block') || event.target.closest('.zone') || event.target.closest('.edge-hit') || event.target.closest('.edge-note') || event.target.closest('button'))return;
     if(selected){selected=null;renderZones();renderBlocks();renderEdges();renderInspector();}
     const start={x:event.clientX,y:event.clientY};const position={...board().viewport};
     elements.canvas.classList.add('panning');
@@ -594,7 +689,7 @@ function connectEvents() {
   },{passive:false});
   document.addEventListener('keydown',event=>{
     if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
-    if(event.key==='Escape'){pendingSourceId=null;previewPoint=null;renderEdges();message('Connection cancelled');return;}
+    if(event.key==='Escape'){pendingSource=null;previewPoint=null;renderEdges();message('Connection cancelled');return;}
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='z'){event.preventDefault();travelHistory(event.shiftKey?'redo':'undo');return;}
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='y'){event.preventDefault();travelHistory('redo');return;}
     if((event.key==='Delete'||event.key==='Backspace')&&selected){

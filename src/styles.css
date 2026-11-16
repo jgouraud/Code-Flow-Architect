@@ -595,21 +595,20 @@ button,input,textarea,select {
   border:3px solid #172a45;
   background:#83b7ff;
   position:absolute;
-  top:calc(50% - 8.5px);
   padding:0;
   z-index:3;
   box-shadow:0 0 0 1px #72adf6;
   cursor:crosshair;
+  transform:translate(-50%,-50%);
   transition:transform .12s
 }
-.port.input {
-  left:-9px
-}
-.port.output {
-  right:-9px
-}
+.port.side-left { left:0; top:var(--port-offset) }
+.port.side-right { left:100%; top:var(--port-offset) }
+.port.side-top { top:0; left:var(--port-offset) }
+.port.side-bottom { top:100%; left:var(--port-offset) }
+.port.output { border-radius:4px }
 .port:hover,.port:focus-visible,.port.connection-target {
-  transform:scale(1.22);
+  transform:translate(-50%,-50%) scale(1.22);
   background:#c2e1ff
 }
 .port:focus-visible {
@@ -1105,6 +1104,16 @@ button,input,textarea,select {
   border-inline-start:3px solid var(--nature-accent)
 }
 [data-theme="light"] .block[data-nature] .block-nature { background:rgba(255,255,255,.7) }
+.edge-note { cursor:pointer; pointer-events:all }
+.edge-note:focus-visible { outline:2px solid #79b6ff; outline-offset:4px }
+.edge-type { font:600 11px system-ui,sans-serif; fill:#dbeafe; paint-order:stroke; stroke:#172a45; stroke-width:4px }
+[data-theme="light"] .edge-type { fill:#24456e; stroke:#fff }
+.port-editor { border:1px solid #324563; border-radius:9px; margin:11px 0; padding:10px; min-width:0 }
+.port-editor strong { display:block; font-size:11px; margin-bottom:11px }
+.port-editor .field { margin-bottom:12px }
+.port-actions { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0 }
+.port-actions .btn { min-width:0 }
+[data-theme="light"] .port-editor { border-color:#b9cbe0 }
 .board-header { position:relative; z-index:4 }
 .nature-legend { position:relative; flex:none }
 .nature-legend > summary { cursor:pointer; list-style:revert }

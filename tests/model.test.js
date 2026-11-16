@@ -45,8 +45,8 @@ test('import validator rejects invalid schema, missing ports, detached boards an
   const clone=()=>structuredClone(base);
   const badVersion=clone();badVersion.schemaVersion=999;
   assert.match(validateProject(badVersion),/Unsupported project version/);
-  const badPort=clone();badPort.boards[badPort.rootBoardId].blocks[0].ports=[];
-  assert.match(validateProject(badPort),/ports/);
+  const badPort=clone();badPort.boards[badPort.rootBoardId].blocks[0].ports=[{ invalid: true }];
+  assert.match(validateProject(badPort),/port/);
   const detached=clone();detached.boards['unknown']={id:'unknown',name:'Detached',ownerBlockId:null,blocks:[],edges:[],viewport:{x:0,y:0,zoom:1}};
   assert.match(validateProject(detached),/Unreachable/);
   const dangling=clone();dangling.boards[dangling.rootBoardId].edges[0].target.blockId='missing';
