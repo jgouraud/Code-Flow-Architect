@@ -1,0 +1,55 @@
+/** Reusable architectural vocabulary, intentionally separate from project instances. */
+const definitions = [
+  ['H0','System','Architecture','System boundary','▣','System'],
+  ['H0','Frontend application','Architecture','User-facing client','◫','Frontend'],
+  ['H0','Backend service','Architecture','Service boundary','◈','Backend'],
+  ['H0','Database','Architecture','Durable data storage','▤','Data'],
+  ['H0','External API','Architecture','Third-party integration','⇄','API'],
+  ['H0','Orchestrator','Architecture','Coordinates workflows','⤴','Control'],
+  ['H0','Agent system','Architecture','Autonomous task system','✧','AI'],
+  ['H0','Message queue','Architecture','Asynchronous messaging','≋','Queue'],
+  ['H0','File storage','Architecture','Object or file storage','▥','Storage'],
+  ['H0','Authentication','Architecture','Identity and access boundary','◇','Auth'],
+  ['H1','Data ingestion','Pipeline','Accept or retrieve raw data','⇣','Data'],
+  ['H1','Data processing','Pipeline','Process and reshape information','⚙','Data'],
+  ['H1','Data analysis','Pipeline','Generate insights from data','◴','Analysis'],
+  ['H1','Model inference','Pipeline','Apply a trained model','✦','AI'],
+  ['H1','Report generation','Pipeline','Create user-facing artifacts','▦','Output'],
+  ['H1','API processing','Pipeline','Handle request and response','⇄','API'],
+  ['H1','User interaction','Pipeline','Accept user actions','⌘','Frontend'],
+  ['H1','Tool execution','Agentic','Invoke a tool or capability','⚒','AI'],
+  ['H1','Agent planning','Agentic','Choose steps toward a goal','✳','AI'],
+  ['H1','Result validation','Pipeline','Verify expected results','✓','Quality'],
+  ['H2','Validate schema','Data','Check fields and types','✓','Data'],
+  ['H2','Parse input','Data','Decode incoming input','{ }','Data'],
+  ['H2','Clean data','Data','Handle invalid and missing values','⌁','Data'],
+  ['H2','Normalize values','Data','Map values into expected range','⇥','Data'],
+  ['H2','Filter records','Data','Select matching records','⏷','Data'],
+  ['H2','Transform features','Data','Derive new attributes','⋈','Data'],
+  ['H2','Aggregate results','Data','Summarize many results','∑','Analysis'],
+  ['H2','Request handler','Web','Receive and route a request','↳','Backend'],
+  ['H2','Frontend form','Web','Collect user input','▤','Frontend'],
+  ['H2','Construct prompt','Agentic','Build model input context','✎','AI'],
+  ['H2','Evaluate output','Agentic','Score or critique an output','◎','Quality'],
+  ['H2','Retry operation','Reliability','Repeat a failed operation','⟲','Control'],
+  ['H2','Handle exception','Reliability','Route and surface errors','!','Control'],
+  ['H3','Read file','Primitive','Read file contents','⇣','Storage'],
+  ['H3','Write file','Primitive','Persist output as a file','⇡','Storage'],
+  ['H3','Parse JSON','Primitive','Deserialize JSON','{ }','Data'],
+  ['H3','Cast type','Primitive','Convert value type','⇄','Data'],
+  ['H3','Map array','Primitive','Apply function to each item','≡','Data'],
+  ['H3','HTTP request','Primitive','Send HTTP request','↗','API'],
+  ['H3','SQL query','Primitive','Read or update records','▤','Data'],
+  ['H3','Log event','Primitive','Record diagnostic event','◉','Quality'],
+  ['H3','Compare values','Primitive','Evaluate a condition','≟','Control'],
+  ['H3','Calculate metric','Primitive','Compute numeric metric','∑','Analysis'],
+  ['H3','Cache lookup','Primitive','Read cached value','▧','Storage'],
+  ['H3','Serialize object','Primitive','Convert object to transport format','{}','Data'],
+  ['H3','Count tokens','Primitive','Estimate token usage','♯','AI']
+];
+
+export const BLOCK_TEMPLATES = definitions.map(([level, label, group, description, icon, category]) => ({
+  id: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'), level, label, group, description, icon, category
+}));
+export const DEFAULT_TEMPLATE = { id: 'blank-block', level: 'H1', label: 'New block', group: 'Custom', description: 'Describe this component', icon: '▣', category: 'Custom' };
+export function findTemplate(id) { return BLOCK_TEMPLATES.find(template => template.id === id) ?? (id === DEFAULT_TEMPLATE.id ? DEFAULT_TEMPLATE : null); }

@@ -1,0 +1,92 @@
+# Schematic for trusted corporate HTTPS ingress terminating on this same host.
+# NOT deployment-ready: replace image refs, commands, actual data paths,
+# DNS/cookie/OIDC eligibility, secrets, health and host ingress policy.
+# Copy as compose.yaml only after adapting it to the target project.
+name: protected-web
+
+services:
+  frontend:
+    image: "${APP_IMAGE:?set a versioned APP_IMAGE}"
+    expose:
+      - "8080"
+    volumes:
+      - type: volume
+        source: app_data
+        target: /srv/app/data
+        read_only: true
+    networks:
+      - app_private
+    restart: unless-stopped
+
+  data-updater:
+    image: "${UPDATER_IMAGE:?set a versioned UPDATER_IMAGE}"
+    profiles: [data-update]
+    # PROJECT-SPECIFIC COMMAND MUST BE SUBSTITUTED BEFORE RUNNING.
+    command: ["/replace-with-real-update-entrypoint"]
+    volumes:
+      - type: volume
+        source: app_data
+        target: /srv/app/data
+    networks:
+      - update_egress
+    restart: "no"
+
+  gateway:
+    image: "nginx:1.29-alpine"  # pin an approved tested digest for production
+    # Same-host trusted TLS reverse proxy only. For other ingress, set approved
+    # private interface/IP and firewall rather than binding to every interface.
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - type: bind
+        source: ./nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+    networks:
+      - ingress
+      - app_private
+    depends_on:
+      - frontend
+      - auth
+    restart: unless-stopped
+
+  auth:
+    image: "quay.io/oauth2-proxy/oauth2-proxy:v7.12.0"  # pin approved digest for production
+    expose:
+      - "4180"
+    networks:
+      - ingress
+    environment:
+      OAUTH2_PROXY_PROVIDER: "${OIDC_PROVIDER:-oidc}"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: "${OIDC_ISSUER_URL:?set OIDC_ISSUER_URL}"
+      OAUTH2_PROXY_CLIENT_ID: "${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}"
+      OAUTH2_PROXY_CLIENT_SECRET_FILE: "/run/secrets/oidc_client_secret"
+      OAUTH2_PROXY_COOKIE_SECRET_FILE: "/run/secrets/oauth_cookie_secret"
+      OAUTH2_PROXY_REDIRECT_URL: "${PUBLIC_URL:?set PUBLIC_URL}/oauth2/callback"
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
+      OAUTH2_PROXY_UPSTREAMS: "static://202"
+      OAUTH2_PROXY_SCOPE: "openid email profile"
+      OAUTH2_PROXY_EMAIL_DOMAINS: "${ALLOWED_EMAIL_DOMAINS:?set restricted ALLOWED_EMAIL_DOMAINS}"
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: "lax"
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+    secrets:
+      - oidc_client_secret
+      - oauth_cookie_secret
+    restart: unless-stopped
+
+networks:
+  ingress: {}
+  app_private:
+    internal: true
+  update_egress: {}
+
+volumes:
+  app_data: {}
+
+secrets:
+  oidc_client_secret:
+    file: ./secrets/oidc_client_secret
+  oauth_cookie_secret:
+    file: ./secrets/oauth_cookie_secret

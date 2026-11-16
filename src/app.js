@@ -1,0 +1,469 @@
+import { BLOCK_TEMPLATES, DEFAULT_TEMPLATE, findTemplate } from './library.js';
+import {
+  BLOCK_WIDTH, BLOCK_HEIGHT, STORAGE_KEY, addBlock, boardPath, connectBlocks,
+  createDecomposition, createDemoProject, createEmptyProject, deleteBlock, findBlock,
+  validateProject
+} from './model.js';
+
+const $ = id => document.getElementById(id);
+const elements = {
+  canvas: $('canvas'), scene: $('scene'), edges: $('edge-layer'), blocks: $('blocks-layer'),
+  library: $('library-items'), inspector: $('inspector-content'), status: $('status-message')
+};
+const kindColor = { data: '#4aa3ff', control: '#a4acc2', error: '#ffae80' };
+let project;
+let currentBoardId;
+let selected = null;
+let libraryLevel = 'All';
+let pendingSourceId = null;
+let previewPoint = null;
+let undoStack = [];
+let redoStack = [];
+
+function message(text) { elements.status.textContent = text; }
+function save() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
+    $('save-status').textContent = '● Saved locally';
+    $('save-status').classList.remove('warning');
+  } catch {
+    $('save-status').textContent = '⚠ Not saved — export JSON';
+    $('save-status').classList.add('warning');
+    message('Browser storage unavailable. Export your project to keep your work.');
+  }
+}
+function load() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const candidate = JSON.parse(stored);
+      if (!validateProject(candidate)) return candidate;
+      message('Stored project was invalid; loaded an example instead.');
+    }
+  } catch { message('Could not load local project; loaded an example instead.'); }
+  return createDemoProject();
+}
+function board() { return project.boards[currentBoardId]; }
+function cloneProject() { return JSON.stringify(project); }
+function mutate(operation) {
+  const snapshot = cloneProject();
+  try { operation(); }
+  catch (error) { project = JSON.parse(snapshot); message(error.message || 'Could not complete operation'); return false; }
+  undoStack.push(snapshot);
+  if (undoStack.length > 60) undoStack.shift();
+  redoStack = [];
+  save();
+  render();
+  return true;
+}
+function travelHistory(direction) {
+  const source = direction === 'undo' ? undoStack : redoStack;
+  const dest = direction === 'undo' ? redoStack : undoStack;
+  if (!source.length) return;
+  dest.push(cloneProject());
+  project = JSON.parse(source.pop());
+  if (!project.boards[currentBoardId]) currentBoardId = project.rootBoardId;
+  selected = null; pendingSourceId = null;
+  save(); render(); message(direction === 'undo' ? 'Undid last edit' : 'Redid last edit');
+}
+function element(tag, cls = '', text = '') {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text) node.textContent = text;
+  return node;
+}
+function button(label, cls, action, title = label) {
+  const node = element('button', cls, label);
+  node.type = 'button'; node.title = title; node.addEventListener('click', action);
+  return node;
+}
+function renderLibrary() {
+  const filters = $('level-filters'); filters.replaceChildren();
+  for (const level of ['All', 'H0', 'H1', 'H2', 'H3']) {
+    const item = button(level, `filter-pill ${libraryLevel === level ? 'active' : ''}`, () => { libraryLevel = level; renderLibrary(); });
+    item.setAttribute('aria-pressed', String(libraryLevel === level));
+    filters.append(item);
+  }
+  const query = $('library-search').value.trim().toLowerCase();
+  const filtered = BLOCK_TEMPLATES.filter(item => (libraryLevel === 'All' || item.level === libraryLevel) && `${item.label} ${item.description} ${item.group} ${item.category}`.toLowerCase().includes(query));
+  elements.library.replaceChildren();
+  let group = '';
+  for (const template of filtered) {
+    const key = `${template.level} · ${template.group}`;
+    if (key !== group) { elements.library.append(element('div', 'library-group', key)); group = key; }
+    const item = element('button', 'template-row');
+    item.type = 'button'; item.draggable = true; item.title = `Add ${template.label} to canvas`;
+    const glyph = element('span', `template-icon category-${template.category.toLowerCase()}`, template.icon);
+    glyph.setAttribute('aria-hidden', 'true');
+    const text = element('span', 'template-info');
+    text.append(element('strong', '', template.label), element('small', '', template.description));
+    const add = element('span', 'template-add', '+'); add.setAttribute('aria-hidden','true');
+    item.append(glyph, text, add);
+    item.addEventListener('click', () => addTemplate(template.id));
+    item.addEventListener('dragstart', event => {
+      event.dataTransfer.setData('application/x-codeflow-template', template.id);
+      event.dataTransfer.setData('text/plain', template.id);
+      event.dataTransfer.effectAllowed = 'copy';
+    });
+    elements.library.append(item);
+  }
+  if (!filtered.length) elements.library.append(element('p', 'no-results', 'No blocks found. Try another search.'));
+}
+function addTemplate(templateId, position = null) {
+  const center = position ?? worldPointFromScreen(elements.canvas.getBoundingClientRect().left + elements.canvas.clientWidth / 2, elements.canvas.getBoundingClientRect().top + elements.canvas.clientHeight / 2);
+  const count = board().blocks.length;
+  const blockPosition = position ?? { x: center.x - BLOCK_WIDTH/2 + (count%4)*14, y: center.y - BLOCK_HEIGHT/2 + (count%4)*18 };
+  let id;
+  if (mutate(() => { id = addBlock(project, currentBoardId, templateId, blockPosition).id; })) {
+    selected = { type: 'block', id }; render(); message('Block added. Double-click to decompose it.');
+  }
+}
+function getTemplateIcon(block) { return findTemplate(block.templateId)?.icon ?? '▣'; }
+function renderBreadcrumbs() {
+  const breadcrumbs = $('breadcrumbs'); breadcrumbs.replaceChildren();
+  const path = boardPath(project, currentBoardId);
+  path.forEach((entry,index) => {
+    if (index) breadcrumbs.append(element('span','breadcrumb-separator','›'));
+    const label = index === 0 ? 'Overview' : entry.name;
+    const crumb = button(label, `breadcrumb ${entry.id === currentBoardId ? 'current' : ''}`, () => openBoard(entry.id));
+    if (entry.id === currentBoardId) crumb.setAttribute('aria-current','page');
+    breadcrumbs.append(crumb);
+  });
+  $('board-meta').textContent = `${board().name} · ${path.length === 1 ? 'H0 · System overview' : `Depth ${path.length - 1} · Decomposition`}`;
+}
+function renderBlocks() {
+  elements.blocks.replaceChildren();
+  for (const block of board().blocks) {
+    const node = element('div', `block ${selected?.type === 'block' && selected.id === block.id ? 'selected' : ''}`);
+    node.dataset.blockId = block.id; node.style.left = `${block.position.x}px`; node.style.top = `${block.position.y}px`;
+    node.tabIndex = 0; node.setAttribute('role','group');
+    node.setAttribute('aria-label', `${block.label}, ${block.level} block${block.childBoardId ? ', has decomposition' : ''}`);
+    const top = element('div','block-top');
+    const icon = element('span','block-icon',getTemplateIcon(block)); icon.setAttribute('aria-hidden','true');
+    top.append(icon,element('span','block-level',block.level));
+    if (block.childBoardId) { const mark = element('span','decomposed-mark','▤'); mark.title = 'Has decomposition'; top.append(mark); }
+    const name = element('div','block-name',block.label);
+    const description = element('div','block-description',block.description || 'Architectural component');
+    node.append(top,name,description);
+    for (const direction of ['input','output']) {
+      const port = block.ports.find(p => p.direction === direction);
+      const control = button('', `port ${direction} ${pendingSourceId && direction === 'input' ? 'connection-target' : ''}`, event => {
+        event.stopPropagation();
+        if (direction === 'input' && pendingSourceId) completeConnection(pendingSourceId, block.id);
+        if (direction === 'output') { pendingSourceId = block.id; previewPoint = null; renderEdges(); message('Choose an input port to connect, or press Escape.'); }
+      }, `${direction === 'input' ? 'Input' : 'Output'} port: ${port.name}`);
+      control.setAttribute('aria-label', `${block.label} ${direction} port: ${port.name}`);
+      if (direction === 'output') control.addEventListener('pointerdown', event => startConnectionDrag(event, block.id));
+      node.append(control);
+    }
+    node.addEventListener('click', event => {
+      if (event.target.closest('.port')) return;
+      select({type:'block',id:block.id});
+    });
+    node.addEventListener('dblclick', event => {
+      if (!event.target.closest('.port')) openDecomposition(block.id);
+    });
+    node.addEventListener('keydown', event => {
+      if (event.target !== node) return;
+      if (event.key === 'Enter') { event.preventDefault(); openDecomposition(block.id); }
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) {
+        event.preventDefault(); const step = event.shiftKey ? 20 : 10;
+        const d = {ArrowLeft:[-step,0],ArrowRight:[step,0],ArrowUp:[0,-step],ArrowDown:[0,step]}[event.key];
+        mutate(() => { block.position.x += d[0]; block.position.y += d[1]; });
+        elements.blocks.querySelector(`[data-block-id="${CSS.escape(block.id)}"]`)?.focus();
+      }
+    });
+    node.addEventListener('pointerdown', event => startBlockDrag(event, block));
+    elements.blocks.append(node);
+  }
+}
+function edgePath(source, target) {
+  const sx = source.position.x + BLOCK_WIDTH;
+  const sy = source.position.y + BLOCK_HEIGHT / 2;
+  const tx = target.position.x;
+  const ty = target.position.y + BLOCK_HEIGHT / 2;
+  const bend = Math.max(70, Math.abs(tx-sx) * .48);
+  return `M ${sx} ${sy} C ${sx+bend} ${sy}, ${tx-bend} ${ty}, ${tx} ${ty}`;
+}
+function svg(tag, attributes) {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [key,value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+  return node;
+}
+function renderEdges() {
+  elements.edges.replaceChildren();
+  const current = board();
+  const lookup = new Map(current.blocks.map(block => [block.id,block]));
+  for (const edge of current.edges) {
+    const source = lookup.get(edge.source.blockId), target = lookup.get(edge.target.blockId);
+    if (!source || !target) continue;
+    const d = edgePath(source,target);
+    const color = kindColor[edge.kind] ?? kindColor.data;
+    const isSelected = selected?.type === 'edge' && selected.id === edge.id;
+    const visible = svg('path',{d,stroke:color,'stroke-width':isSelected?3.5:2.5,fill:'none','stroke-dasharray': edge.kind === 'control' ? '7 6' : edge.kind === 'error' ? '3 6' : 'none',class:'visible-edge'});
+    const hit = svg('path',{d,stroke:'rgba(255,255,255,0.02)','stroke-width':18,fill:'none',class:'edge-hit',tabindex:'0',role:'button','aria-label':`Select ${edge.kind} connection`});
+    hit.addEventListener('click', event => {event.stopPropagation(); select({type:'edge',id:edge.id});});
+    hit.addEventListener('keydown', event => {if(event.key==='Enter' || event.key===' '){event.preventDefault();select({type:'edge',id:edge.id});}});
+    elements.edges.append(visible,hit);
+    const midX = (source.position.x + BLOCK_WIDTH + target.position.x) / 2;
+    const midY = (source.position.y + target.position.y) / 2 + BLOCK_HEIGHT / 2;
+    const midpoint = svg('circle', {
+      cx: midX, cy: midY, r: isSelected ? 9 : 7,
+      fill: '#182e4c', stroke: color, 'stroke-width': isSelected ? 3 : 2,
+      class: 'edge-midpoint', tabindex: '0', role: 'button',
+      'aria-label': `Select ${edge.kind} connection`
+    });
+    midpoint.addEventListener('click', event => { event.stopPropagation(); select({type:'edge',id:edge.id}); });
+    midpoint.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); }
+    });
+    elements.edges.append(midpoint);
+    if (edge.label) {
+      const text = svg('text',{x:midX,y:midY-14,fill:'#cbd5e1','font-size':'12','text-anchor':'middle','pointer-events':'none'});
+      text.textContent = edge.label.slice(0,40);
+      elements.edges.append(text);
+    }
+  }
+  if (pendingSourceId) {
+    const source = lookup.get(pendingSourceId);
+    if (source && previewPoint) {
+      const d = edgePath(source,{position:{x:previewPoint.x,y:previewPoint.y-BLOCK_HEIGHT/2}});
+      elements.edges.append(svg('path',{d,stroke:'#89c0ff','stroke-width':2,fill:'none','stroke-dasharray':'7 5','pointer-events':'none'}));
+    }
+  }
+}
+function renderInspector() {
+  const area = elements.inspector; area.replaceChildren();
+  if (!selected) {
+    const hint = element('div','inspector-empty');
+    hint.append(element('div','inspector-empty-icon','◇'),element('h3','','Nothing selected'),element('p','','Select a block or connection to edit its details. Double-click any block to enter a decomposition board.'));
+    const guide = element('div','quick-guide');
+    guide.append(element('strong','','Quick start'),element('p','','1. Drag a block from the library\n2. Connect output → input ports\n3. Double-click to decompose\n4. Export your design as JSON'));
+    area.append(hint,guide);return;
+  }
+  if (selected.type === 'edge') {
+    const edge = board().edges.find(item => item.id===selected.id);
+    if (!edge) {selected=null;renderInspector();return;}
+    area.append(element('span','eyebrow','SELECTED CONNECTION'),element('h3','inspector-title','Connection'));
+    addSelectField(area,'Flow type',edge.kind,['data','control','error'],value=>mutate(()=>{edge.kind=value;}));
+    addTextField(area,'Label',edge.label,value=>mutate(()=>{edge.label=value;}));
+    const actions = element('div','inspector-actions');
+    actions.append(button('Delete connection','btn danger',()=>{mutate(()=>{board().edges=board().edges.filter(item=>item.id!==edge.id);});selected=null;render();}));
+    area.append(actions);return;
+  }
+  const entry = findBlock(project,selected.id);
+  if (!entry || entry.board.id!==currentBoardId) {selected=null;renderInspector();return;}
+  const {block} = entry;
+  const summary = element('div','inspector-summary');
+  summary.append(element('span','inspector-glyph',getTemplateIcon(block)),element('div','inspector-summary-text',`${block.level} · ${block.category}`));
+  area.append(element('span','eyebrow','SELECTED COMPONENT'),summary);
+  addTextField(area,'Block name',block.label,value=>mutate(()=>{block.label=value.slice(0,200)||'Untitled block';if(block.childBoardId)project.boards[block.childBoardId].name=block.label;}));
+  addTextareaField(area,'Purpose / notes',block.description,value=>mutate(()=>{block.description=value.slice(0,2000);}));
+  addSelectField(area,'Abstraction level',block.level,['H0','H1','H2','H3'],value=>mutate(()=>{block.level=value;}));
+  area.append(element('div','inspector-divider'));
+  area.append(element('h4','inspector-section-title','Interface contract'));
+  const input = block.ports.find(port=>port.direction==='input');
+  const output = block.ports.find(port=>port.direction==='output');
+  addTextField(area,'Input port',input.name,value=>mutate(()=>{input.name=value.slice(0,80)||'Input';}));
+  addTextField(area,'Output port',output.name,value=>mutate(()=>{output.name=value.slice(0,80)||'Output';}));
+  area.append(element('div','inspector-divider'));
+  area.append(element('h4','inspector-section-title','Decomposition'));
+  area.append(element('p','inspector-copy', block.childBoardId ? 'This block has a child board. Open it to edit the internal workflow.' : 'Create a child board to describe how this component works internally.'));
+  area.append(button(block.childBoardId?'↗ Open child board':'+ Create decomposition','btn wide accent',()=>openDecomposition(block.id)));
+  area.append(button('Delete block','btn danger wide',()=>{const id=block.id;mutate(()=>deleteBlock(project,currentBoardId,id));selected=null;render();}));
+}
+function addTextField(parent,label,value,onSave) {
+  const wrapper=element('label','field');wrapper.append(element('span','field-label',label));
+  const input=element('input','field-input');input.type='text';input.value=value;input.maxLength=200;
+  input.addEventListener('change',()=>{if(input.value!==value)onSave(input.value);});wrapper.append(input);parent.append(wrapper);
+}
+function addTextareaField(parent,label,value,onSave) {
+  const wrapper=element('label','field');wrapper.append(element('span','field-label',label));
+  const input=element('textarea','field-input field-textarea');input.rows=4;input.maxLength=2000;input.value=value;
+  input.addEventListener('change',()=>{if(input.value!==value)onSave(input.value);});wrapper.append(input);parent.append(wrapper);
+}
+function addSelectField(parent,label,value,options,onSave) {
+  const wrapper=element('label','field');wrapper.append(element('span','field-label',label));
+  const select=element('select','field-input');
+  for(const option of options){const item=element('option','',option.toUpperCase());item.value=option;select.append(item);}
+  select.value=value;select.addEventListener('change',()=>onSave(select.value));wrapper.append(select);parent.append(wrapper);
+}
+function render() {
+  $('project-name').value=project.name;
+  renderBreadcrumbs();renderBlocks();renderEdges();renderInspector();paintViewport();
+  $('board-counts').textContent=`${board().blocks.length} blocks · ${board().edges.length} connections`;
+  $('empty-state').hidden=board().blocks.length>0;
+  $('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;
+}
+function select(next) {
+  selected = next;
+  for (const node of elements.blocks.children) {
+    node.classList.toggle('selected', next?.type === 'block' && node.dataset.blockId === next.id);
+  }
+  renderEdges();
+  renderInspector();
+}
+function openBoard(boardId) {
+  if(!project.boards[boardId])return;
+  currentBoardId=boardId;selected=null;pendingSourceId=null;previewPoint=null;
+  render();elements.canvas.scrollLeft = 0;elements.canvas.scrollTop = 0;
+  $('breadcrumbs').querySelector('[aria-current="page"]')?.focus({preventScroll:true});
+  message(`Opened ${board().name}`);
+}
+function openDecomposition(blockId) {
+  let nextId;
+  const owner=board().blocks.find(item=>item.id===blockId);
+  if (!owner)return;
+  if(owner.childBoardId)nextId=owner.childBoardId;
+  else mutate(()=>{nextId=createDecomposition(project,currentBoardId,blockId);});
+  openBoard(nextId);
+}
+function completeConnection(sourceId,targetId) {
+  pendingSourceId=null;previewPoint=null;
+  const ok=mutate(()=>connectBlocks(project,currentBoardId,sourceId,targetId));
+  if(ok)message('Connection created');
+  else renderEdges();
+}
+function worldPointFromScreen(clientX,clientY) {
+  const rect=elements.canvas.getBoundingClientRect();const {x,y,zoom}=board().viewport;
+  return {x:(clientX-rect.left-x)/zoom,y:(clientY-rect.top-y)/zoom};
+}
+function startConnectionDrag(event,sourceId) {
+  if(event.button!==0)return;
+  event.stopPropagation();pendingSourceId=sourceId;
+  const sx=event.clientX,sy=event.clientY;
+  let moved=false;
+  const move=e=>{if(Math.hypot(e.clientX-sx,e.clientY-sy)>6)moved=true;previewPoint=worldPointFromScreen(e.clientX,e.clientY);renderEdges();};
+  const up=e=>{
+    window.removeEventListener('pointermove',move);
+    window.removeEventListener('pointercancel',cancel);
+    previewPoint=null;
+    if(moved){
+      const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('.port.input');
+      const targetId=target?.closest('.block')?.dataset.blockId;
+      if(targetId){completeConnection(sourceId,targetId);return;}
+      pendingSourceId=null;message('Connect by dropping on an input port.');
+    }
+    renderEdges();
+  };
+  const cancel=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);pendingSourceId=null;previewPoint=null;renderEdges();};
+  window.addEventListener('pointermove',move);window.addEventListener('pointerup',up,{once:true});window.addEventListener('pointercancel',cancel,{once:true});
+}
+function startBlockDrag(event,block) {
+  if(event.button!==0||event.target.closest('.port'))return;
+  event.stopPropagation();
+  select({type:'block',id:block.id});
+  const origin={...block.position};const sx=event.clientX,sy=event.clientY;
+  let moved=false;
+  const node=elements.blocks.querySelector(`[data-block-id="${CSS.escape(block.id)}"]`);
+  const move=e=>{
+    const dx=(e.clientX-sx)/board().viewport.zoom,dy=(e.clientY-sy)/board().viewport.zoom;
+    if(Math.abs(dx)+Math.abs(dy)>3)moved=true;
+    if(!moved)return;
+    block.position={x:Math.round(origin.x+dx),y:Math.round(origin.y+dy)};
+    node.style.left=`${block.position.x}px`;node.style.top=`${block.position.y}px`;
+    renderEdges();
+  };
+  const finish=()=>{
+    window.removeEventListener('pointermove',move);
+    window.removeEventListener('pointercancel',cancel);
+    if(moved){const next={...block.position};block.position=origin;mutate(()=>{block.position=next;});message('Block moved');}
+  };
+  const cancel=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',finish);block.position=origin;render();};
+  window.addEventListener('pointermove',move);
+  window.addEventListener('pointerup',finish,{once:true});window.addEventListener('pointercancel',cancel,{once:true});
+}
+function paintViewport() {
+  const {x,y,zoom}=board().viewport;
+  elements.scene.style.transform=`translate(${x}px, ${y}px) scale(${zoom})`;
+  elements.canvas.style.backgroundSize=`${24*zoom}px ${24*zoom}px`;
+  elements.canvas.style.backgroundPosition=`${x}px ${y}px`;
+  $('zoom-label').textContent=`${Math.round(zoom*100)}%`;
+}
+function zoomTo(nextZoom,pointerX=elements.canvas.clientWidth/2,pointerY=elements.canvas.clientHeight/2) {
+  const viewport=board().viewport;
+  const zoom=Math.max(.3,Math.min(2.5,nextZoom));
+  const worldX=(pointerX-viewport.x)/viewport.zoom,worldY=(pointerY-viewport.y)/viewport.zoom;
+  viewport.x=pointerX-worldX*zoom;viewport.y=pointerY-worldY*zoom;viewport.zoom=zoom;
+  paintViewport();save();
+}
+function fitView() {
+  const current=board();
+  if(!current.blocks.length){current.viewport={x:80,y:100,zoom:1};paintViewport();save();return;}
+  const minX=Math.min(...current.blocks.map(b=>b.position.x));
+  const maxX=Math.max(...current.blocks.map(b=>b.position.x+BLOCK_WIDTH));
+  const minY=Math.min(...current.blocks.map(b=>b.position.y));
+  const maxY=Math.max(...current.blocks.map(b=>b.position.y+BLOCK_HEIGHT));
+  const width=Math.max(1,maxX-minX),height=Math.max(1,maxY-minY);
+  const zoom=Math.min(1.3,Math.max(.3,Math.min((elements.canvas.clientWidth-110)/width,(elements.canvas.clientHeight-160)/height)));
+  current.viewport={x:(elements.canvas.clientWidth-width*zoom)/2-minX*zoom,y:(elements.canvas.clientHeight-height*zoom)/2-minY*zoom,zoom};
+  paintViewport();save();
+}
+function connectEvents() {
+  $('library-search').addEventListener('input',renderLibrary);
+  $('undo').addEventListener('click',()=>travelHistory('undo'));
+  $('redo').addEventListener('click',()=>travelHistory('redo'));
+  $('add-blank').addEventListener('click',()=>addTemplate(DEFAULT_TEMPLATE.id));
+  $('project-name').addEventListener('change',event=>{const name=event.target.value.trim()||'Untitled project';if(name!==project.name)mutate(()=>{project.name=name;});});
+  $('fit-view').addEventListener('click',fitView);
+  $('center-view').addEventListener('click',()=>{const current=board().viewport;current.x=80;current.y=95;current.zoom=1;paintViewport();save();});
+  $('zoom-in').addEventListener('click',()=>zoomTo(board().viewport.zoom*1.15));
+  $('zoom-out').addEventListener('click',()=>zoomTo(board().viewport.zoom/1.15));
+  $('new-project').addEventListener('click',()=>{
+    if(!confirm('Create a blank project? Export your current project first if you need a backup.'))return;
+    project=createEmptyProject();currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSourceId=null;save();render();message('New blank project created');
+  });
+  $('export').addEventListener('click',()=>{
+    const blob=new Blob([JSON.stringify(project,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);const link=document.createElement('a');
+    link.href=url;link.download=`${project.name.toLowerCase().replace(/[^a-z0-9-]+/g,'-')||'codeflow'}-architecture.json`;
+    document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    message('Project JSON exported');
+  });
+  $('import').addEventListener('click',()=>$('import-file').click());
+  $('import-file').addEventListener('change',async event=>{
+    const file=event.target.files?.[0];event.target.value='';if(!file)return;
+    if(file.size>2_000_000){message('Import rejected: JSON files must be smaller than 2 MB');return;}
+    try{
+      const candidate=JSON.parse(await file.text());const error=validateProject(candidate);
+      if(error)throw new Error(error);
+      project=candidate;currentBoardId=project.rootBoardId;selected=null;undoStack=[];redoStack=[];pendingSourceId=null;save();render();message('Project imported successfully');
+    }catch(error){message(`Import failed: ${error.message}`);}
+  });
+  elements.canvas.addEventListener('dragover',event=>{event.preventDefault();event.dataTransfer.dropEffect='copy';elements.canvas.classList.add('drag-over');});
+  elements.canvas.addEventListener('dragleave',()=>elements.canvas.classList.remove('drag-over'));
+  elements.canvas.addEventListener('drop',event=>{
+    event.preventDefault();elements.canvas.classList.remove('drag-over');
+    const templateId=event.dataTransfer.getData('application/x-codeflow-template');
+    if(!findTemplate(templateId))return;
+    const point=worldPointFromScreen(event.clientX,event.clientY);
+    addTemplate(templateId,{x:point.x-BLOCK_WIDTH/2,y:point.y-BLOCK_HEIGHT/2});
+  });
+  elements.canvas.addEventListener('pointerdown',event=>{
+    if(event.button!==0 || event.target.closest('.block') || event.target.closest('.edge-hit') || event.target.closest('button'))return;
+    if(selected){selected=null;renderBlocks();renderEdges();renderInspector();}
+    const start={x:event.clientX,y:event.clientY};const position={...board().viewport};
+    elements.canvas.classList.add('panning');
+    const move=e=>{board().viewport.x=position.x+e.clientX-start.x;board().viewport.y=position.y+e.clientY-start.y;paintViewport();};
+    const stop=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointercancel',stop);elements.canvas.classList.remove('panning');save();};
+    window.addEventListener('pointermove',move);window.addEventListener('pointerup',stop,{once:true});window.addEventListener('pointercancel',stop,{once:true});
+  });
+  elements.canvas.addEventListener('wheel',event=>{
+    event.preventDefault();const rect=elements.canvas.getBoundingClientRect();zoomTo(board().viewport.zoom*(event.deltaY>0?.91:1.09),event.clientX-rect.left,event.clientY-rect.top);
+  },{passive:false});
+  document.addEventListener('keydown',event=>{
+    if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
+    if(event.key==='Escape'){pendingSourceId=null;previewPoint=null;renderEdges();message('Connection cancelled');return;}
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='z'){event.preventDefault();travelHistory(event.shiftKey?'redo':'undo');return;}
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='y'){event.preventDefault();travelHistory('redo');return;}
+    if((event.key==='Delete'||event.key==='Backspace')&&selected){
+      event.preventDefault();const chosen=selected;
+      if(chosen.type==='block')mutate(()=>deleteBlock(project,currentBoardId,chosen.id));
+      else mutate(()=>{board().edges=board().edges.filter(edge=>edge.id!==chosen.id);});
+      selected=null;render();
+    }
+  });
+}
+
+project=load();currentBoardId=project.rootBoardId;
+connectEvents();renderLibrary();render();
