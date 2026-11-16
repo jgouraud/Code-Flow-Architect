@@ -1,16 +1,17 @@
 import { BLOCK_TEMPLATES, DEFAULT_TEMPLATE, findTemplate } from './library.js';
 import {
-  BLOCK_WIDTH, BLOCK_HEIGHT, STORAGE_KEY, addBlock, boardPath, connectBlocks,
-  createDecomposition, createDemoProject, createEmptyProject, deleteBlock, findBlock,
-  validateProject
+  BLOCK_WIDTH, BLOCK_HEIGHT, BLOCK_NATURES, DATA_FORMATS, STORAGE_KEY, addBlock, addZone,
+  boardPath, connectBlocks, createDecomposition, createDemoProject, createEmptyProject,
+  deleteBlock, findBlock, validateProject
 } from './model.js';
 
 const $ = id => document.getElementById(id);
 const elements = {
-  canvas: $('canvas'), scene: $('scene'), edges: $('edge-layer'), blocks: $('blocks-layer'),
+  canvas: $('canvas'), scene: $('scene'), edges: $('edge-layer'), blocks: $('blocks-layer'), zones: $('zone-layer'),
   library: $('library-items'), inspector: $('inspector-content'), status: $('status-message')
 };
 const kindColor = { data: '#4aa3ff', control: '#a4acc2', error: '#ffae80' };
+const lightKindColor = { data: '#246bb3', control: '#5c6980', error: '#b4533b' };
 let project;
 let currentBoardId;
 let selected = null;
@@ -21,6 +22,28 @@ let undoStack = [];
 let redoStack = [];
 
 function message(text) { elements.status.textContent = text; }
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  $('theme-toggle').textContent = theme === 'light' ? '☀ Light' : '☾ Dark';
+  $('theme-toggle').setAttribute('aria-pressed', String(theme === 'light'));
+  document.querySelector('meta[name="theme-color"]').content = theme === 'light' ? '#f3f7fd' : '#0b1120';
+  if (project) renderEdges();
+}
+function setupTheme() {
+  let theme = window.matchMedia?.('(prefers-color-scheme: light)')?.matches ? 'light' : 'dark';
+  try { const stored = localStorage.getItem('codeflow-architect-theme'); if (['light','dark'].includes(stored)) theme = stored; } catch { /* Storage may be disabled. */ }
+  applyTheme(theme);
+}
+function togglePanel(side) {
+  const panel = document.querySelector(`.${side}-panel`);
+  const collapsed = panel.classList.toggle('collapsed');
+  document.querySelector('.workspace').classList.toggle(`${side}-collapsed`, collapsed);
+  const control = $(`toggle-${side}`);
+  control.setAttribute('aria-expanded', String(!collapsed));
+  control.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${side === 'library' ? 'block library' : 'inspector'}`);
+  control.title = control.getAttribute('aria-label');
+  control.textContent = side === 'library' ? (collapsed ? '›' : '‹') : (collapsed ? '‹' : '›');
+}
 function save() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
@@ -131,19 +154,52 @@ function renderBreadcrumbs() {
   });
   $('board-meta').textContent = `${board().name} · ${path.length === 1 ? 'H0 · System overview' : `Depth ${path.length - 1} · Decomposition`}`;
 }
+function renderZones() {
+  elements.zones.replaceChildren();
+  for (const zone of board().zones ?? []) {
+    const active = selected?.type === 'zone' && selected.id === zone.id;
+    const node = element('div', `zone zone-${zone.kind} ${active ? 'selected' : ''}`);
+    node.dataset.zoneId = zone.id;
+    node.style.left = `${zone.position.x}px`;
+    node.style.top = `${zone.position.y}px`;
+    node.style.width = `${zone.width}px`;
+    node.style.height = `${zone.height}px`;
+    node.tabIndex = 0;
+    node.setAttribute('role', 'group');
+    node.setAttribute('aria-label', `${zone.kind} zone: ${zone.label}. Use arrow keys to reposition.`);
+    node.append(element('span', 'zone-caption', zone.label));
+    const grip = button('↘', 'zone-resize', () => select({type:'zone',id:zone.id}), `Resize ${zone.label}`);
+    grip.setAttribute('aria-label', `Resize ${zone.label}`);
+    grip.addEventListener('pointerdown', event => startZoneDrag(event, zone, 'resize'));
+    node.append(grip);
+    node.addEventListener('click', event => { event.stopPropagation(); select({type:'zone',id:zone.id}); });
+    node.addEventListener('pointerdown', event => startZoneDrag(event, zone, 'move'));
+    node.addEventListener('keydown', event => {
+      if (event.target !== node || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) return;
+      event.preventDefault();
+      const step = event.shiftKey ? 20 : 10;
+      const delta = { ArrowLeft:[-step,0], ArrowRight:[step,0], ArrowUp:[0,-step], ArrowDown:[0,step] }[event.key];
+      mutate(() => { zone.position.x += delta[0]; zone.position.y += delta[1]; });
+      elements.zones.querySelector(`[data-zone-id="${CSS.escape(zone.id)}"]`)?.focus();
+    });
+    elements.zones.append(node);
+  }
+}
 function renderBlocks() {
   elements.blocks.replaceChildren();
   for (const block of board().blocks) {
     const node = element('div', `block ${selected?.type === 'block' && selected.id === block.id ? 'selected' : ''}`);
+    const nature = block.nature ?? 'component';
+    node.dataset.nature = nature;
     node.dataset.blockId = block.id; node.style.left = `${block.position.x}px`; node.style.top = `${block.position.y}px`;
     node.tabIndex = 0; node.setAttribute('role','group');
-    node.setAttribute('aria-label', `${block.label}, ${block.level} block${block.childBoardId ? ', has decomposition' : ''}`);
+    node.setAttribute('aria-label', `${block.label}, ${block.level} ${nature}${block.dataFormat && nature === 'data' ? `, ${block.dataFormat}` : ''}${block.childBoardId ? ', has decomposition' : ''}`);
     const top = element('div','block-top');
     const icon = element('span','block-icon',getTemplateIcon(block)); icon.setAttribute('aria-hidden','true');
-    top.append(icon,element('span','block-level',block.level));
+    top.append(icon,element('span','block-level',block.level), element('span','block-nature',nature === 'data' ? (block.dataFormat ?? 'data') : nature));
     if (block.childBoardId) { const mark = element('span','decomposed-mark','▤'); mark.title = 'Has decomposition'; top.append(mark); }
     const name = element('div','block-name',block.label);
-    const description = element('div','block-description',block.description || 'Architectural component');
+    const description = element('div','block-description',block.sourceRef || block.description || 'Architectural component');
     node.append(top,name,description);
     for (const direction of ['input','output']) {
       const port = block.ports.find(p => p.direction === direction);
@@ -194,11 +250,12 @@ function renderEdges() {
   elements.edges.replaceChildren();
   const current = board();
   const lookup = new Map(current.blocks.map(block => [block.id,block]));
+  const palette = document.documentElement.dataset.theme === 'light' ? lightKindColor : kindColor;
   for (const edge of current.edges) {
     const source = lookup.get(edge.source.blockId), target = lookup.get(edge.target.blockId);
     if (!source || !target) continue;
     const d = edgePath(source,target);
-    const color = kindColor[edge.kind] ?? kindColor.data;
+    const color = palette[edge.kind] ?? palette.data;
     const isSelected = selected?.type === 'edge' && selected.id === edge.id;
     const visible = svg('path',{d,stroke:color,'stroke-width':isSelected?3.5:2.5,fill:'none','stroke-dasharray': edge.kind === 'control' ? '7 6' : edge.kind === 'error' ? '3 6' : 'none',class:'visible-edge'});
     const hit = svg('path',{d,stroke:'rgba(255,255,255,0.02)','stroke-width':18,fill:'none',class:'edge-hit',tabindex:'0',role:'button','aria-label':`Select ${edge.kind} connection`});
@@ -209,7 +266,7 @@ function renderEdges() {
     const midY = (source.position.y + target.position.y) / 2 + BLOCK_HEIGHT / 2;
     const midpoint = svg('circle', {
       cx: midX, cy: midY, r: isSelected ? 9 : 7,
-      fill: '#182e4c', stroke: color, 'stroke-width': isSelected ? 3 : 2,
+      fill: document.documentElement.dataset.theme === 'light' ? '#ffffff' : '#182e4c', stroke: color, 'stroke-width': isSelected ? 3 : 2,
       class: 'edge-midpoint', tabindex: '0', role: 'button',
       'aria-label': `Select ${edge.kind} connection`
     });
@@ -219,7 +276,7 @@ function renderEdges() {
     });
     elements.edges.append(midpoint);
     if (edge.label) {
-      const text = svg('text',{x:midX,y:midY-14,fill:'#cbd5e1','font-size':'12','text-anchor':'middle','pointer-events':'none'});
+      const text = svg('text',{x:midX,y:midY-14,fill:document.documentElement.dataset.theme === 'light' ? '#334b70' : '#cbd5e1','font-size':'12','text-anchor':'middle','pointer-events':'none'});
       text.textContent = edge.label.slice(0,40);
       elements.edges.append(text);
     }
@@ -241,6 +298,18 @@ function renderInspector() {
     guide.append(element('strong','','Quick start'),element('p','','1. Drag a block from the library\n2. Connect output → input ports\n3. Double-click to decompose\n4. Export your design as JSON'));
     area.append(hint,guide);return;
   }
+  if (selected.type === 'zone') {
+    const zone = (board().zones ?? []).find(item => item.id === selected.id);
+    if (!zone) { selected=null; renderInspector(); return; }
+    area.append(element('span','eyebrow','SELECTED ZONE'), element('h3','inspector-title','Architecture zone'));
+    addSelectField(area,'Boundary',zone.kind,['frontend','backend'],value=>mutate(()=>{zone.kind=value;}));
+    addTextField(area,'Zone label',zone.label,value=>mutate(()=>{zone.label=value.slice(0,120)||'Untitled zone';}));
+    addNumberField(area,'Width',zone.width,180,10000,value=>mutate(()=>{zone.width=value;}));
+    addNumberField(area,'Height',zone.height,120,10000,value=>mutate(()=>{zone.height=value;}));
+    area.append(element('p','inspector-copy','Drag the zone to move it. Use its lower-right handle to resize it. Zones are visual boundaries, not containers that move blocks.'));
+    area.append(button('Delete zone','btn danger wide',()=>{const id=zone.id;mutate(()=>{board().zones=board().zones.filter(item=>item.id!==id);});selected=null;render();}));
+    return;
+  }
   if (selected.type === 'edge') {
     const edge = board().edges.find(item => item.id===selected.id);
     if (!edge) {selected=null;renderInspector();return;}
@@ -259,7 +328,10 @@ function renderInspector() {
   area.append(element('span','eyebrow','SELECTED COMPONENT'),summary);
   addTextField(area,'Block name',block.label,value=>mutate(()=>{block.label=value.slice(0,200)||'Untitled block';if(block.childBoardId)project.boards[block.childBoardId].name=block.label;}));
   addTextareaField(area,'Purpose / notes',block.description,value=>mutate(()=>{block.description=value.slice(0,2000);}));
+  addTextField(area,'Source path / symbol',block.sourceRef ?? '',value=>mutate(()=>{block.sourceRef=value.slice(0,500);}));
   addSelectField(area,'Abstraction level',block.level,['H0','H1','H2','H3'],value=>mutate(()=>{block.level=value;}));
+  addSelectField(area,'Block nature',block.nature ?? 'component',BLOCK_NATURES,value=>mutate(()=>{block.nature=value;if(value==='data' && !block.dataFormat) block.dataFormat='json';}));
+  if ((block.nature ?? 'component') === 'data') addSelectField(area,'Data format',block.dataFormat ?? 'other',DATA_FORMATS,value=>mutate(()=>{block.dataFormat=value;}));
   area.append(element('div','inspector-divider'));
   area.append(element('h4','inspector-section-title','Interface contract'));
   const input = block.ports.find(port=>port.direction==='input');
@@ -277,6 +349,16 @@ function addTextField(parent,label,value,onSave) {
   const input=element('input','field-input');input.type='text';input.value=value;input.maxLength=200;
   input.addEventListener('change',()=>{if(input.value!==value)onSave(input.value);});wrapper.append(input);parent.append(wrapper);
 }
+function addNumberField(parent,label,value,min,max,onSave) {
+  const wrapper=element('label','field');wrapper.append(element('span','field-label',label));
+  const input=element('input','field-input');input.type='number';input.min=String(min);input.max=String(max);input.step='1';input.value=String(value);
+  input.addEventListener('change',()=>{
+    const number=Number(input.value);
+    if (input.value !== '' && Number.isFinite(number)) onSave(Math.max(min,Math.min(max,Math.round(number))));
+    else input.value=String(value);
+  });
+  wrapper.append(input);parent.append(wrapper);
+}
 function addTextareaField(parent,label,value,onSave) {
   const wrapper=element('label','field');wrapper.append(element('span','field-label',label));
   const input=element('textarea','field-input field-textarea');input.rows=4;input.maxLength=2000;input.value=value;
@@ -290,15 +372,19 @@ function addSelectField(parent,label,value,options,onSave) {
 }
 function render() {
   $('project-name').value=project.name;
-  renderBreadcrumbs();renderBlocks();renderEdges();renderInspector();paintViewport();
-  $('board-counts').textContent=`${board().blocks.length} blocks · ${board().edges.length} connections`;
-  $('empty-state').hidden=board().blocks.length>0;
+  renderBreadcrumbs();renderZones();renderBlocks();renderEdges();renderInspector();paintViewport();
+  const zones = board().zones ?? [];
+  $('board-counts').textContent=`${board().blocks.length} blocks · ${board().edges.length} connections · ${zones.length} zones`;
+  $('empty-state').hidden=board().blocks.length>0 || zones.length>0;
   $('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;
 }
 function select(next) {
   selected = next;
   for (const node of elements.blocks.children) {
     node.classList.toggle('selected', next?.type === 'block' && node.dataset.blockId === next.id);
+  }
+  for (const node of elements.zones.children) {
+    node.classList.toggle('selected', next?.type === 'zone' && node.dataset.zoneId === next.id);
   }
   renderEdges();
   renderInspector();
@@ -373,6 +459,42 @@ function startBlockDrag(event,block) {
   window.addEventListener('pointermove',move);
   window.addEventListener('pointerup',finish,{once:true});window.addEventListener('pointercancel',cancel,{once:true});
 }
+function startZoneDrag(event, zone, mode) {
+  if (event.button !== 0) return;
+  event.stopPropagation();
+  select({type:'zone',id:zone.id});
+  const startX=event.clientX, startY=event.clientY;
+  const before={position:{...zone.position},width:zone.width,height:zone.height};
+  const node=elements.zones.querySelector(`[data-zone-id="${CSS.escape(zone.id)}"]`);
+  let moved=false;
+  const move=e=>{
+    const dx=(e.clientX-startX)/board().viewport.zoom;
+    const dy=(e.clientY-startY)/board().viewport.zoom;
+    if (Math.abs(dx)+Math.abs(dy)>3) moved=true;
+    if (!moved) return;
+    if (mode === 'resize') {
+      zone.width=Math.max(180,Math.min(10000,Math.round(before.width+dx)));
+      zone.height=Math.max(120,Math.min(10000,Math.round(before.height+dy)));
+      node.style.width=`${zone.width}px`;node.style.height=`${zone.height}px`;
+    } else {
+      zone.position={x:Math.round(before.position.x+dx),y:Math.round(before.position.y+dy)};
+      node.style.left=`${zone.position.x}px`;node.style.top=`${zone.position.y}px`;
+    }
+  };
+  const cleanup=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',finish);window.removeEventListener('pointercancel',cancel);};
+  const finish=()=>{
+    cleanup();
+    if (!moved) return;
+    const after={position:{...zone.position},width:zone.width,height:zone.height};
+    Object.assign(zone,before);
+    mutate(()=>Object.assign(zone,after));
+    message(mode === 'resize' ? 'Zone resized' : 'Zone moved');
+  };
+  const cancel=()=>{cleanup();Object.assign(zone,before);render();};
+  window.addEventListener('pointermove',move);
+  window.addEventListener('pointerup',finish,{once:true});
+  window.addEventListener('pointercancel',cancel,{once:true});
+}
 function paintViewport() {
   const {x,y,zoom}=board().viewport;
   elements.scene.style.transform=`translate(${x}px, ${y}px) scale(${zoom})`;
@@ -389,11 +511,12 @@ function zoomTo(nextZoom,pointerX=elements.canvas.clientWidth/2,pointerY=element
 }
 function fitView() {
   const current=board();
-  if(!current.blocks.length){current.viewport={x:80,y:100,zoom:1};paintViewport();save();return;}
-  const minX=Math.min(...current.blocks.map(b=>b.position.x));
-  const maxX=Math.max(...current.blocks.map(b=>b.position.x+BLOCK_WIDTH));
-  const minY=Math.min(...current.blocks.map(b=>b.position.y));
-  const maxY=Math.max(...current.blocks.map(b=>b.position.y+BLOCK_HEIGHT));
+  const boxes=[...current.blocks.map(b=>({x:b.position.x,y:b.position.y,width:BLOCK_WIDTH,height:BLOCK_HEIGHT})),...(current.zones ?? []).map(z=>({x:z.position.x,y:z.position.y,width:z.width,height:z.height}))];
+  if(!boxes.length){current.viewport={x:80,y:100,zoom:1};paintViewport();save();return;}
+  const minX=Math.min(...boxes.map(b=>b.x));
+  const maxX=Math.max(...boxes.map(b=>b.x+b.width));
+  const minY=Math.min(...boxes.map(b=>b.y));
+  const maxY=Math.max(...boxes.map(b=>b.y+b.height));
   const width=Math.max(1,maxX-minX),height=Math.max(1,maxY-minY);
   const zoom=Math.min(1.3,Math.max(.3,Math.min((elements.canvas.clientWidth-110)/width,(elements.canvas.clientHeight-160)/height)));
   current.viewport={x:(elements.canvas.clientWidth-width*zoom)/2-minX*zoom,y:(elements.canvas.clientHeight-height*zoom)/2-minY*zoom,zoom};
@@ -401,12 +524,29 @@ function fitView() {
 }
 function connectEvents() {
   $('library-search').addEventListener('input',renderLibrary);
+  $('toggle-library').addEventListener('click',()=>togglePanel('library'));
+  $('toggle-inspector').addEventListener('click',()=>togglePanel('inspector'));
+  $('theme-toggle').addEventListener('click',()=>{
+    const next=document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    applyTheme(next);
+    try { localStorage.setItem('codeflow-architect-theme',next); } catch { message('Theme preference cannot be saved in this browser.'); }
+  });
   $('undo').addEventListener('click',()=>travelHistory('undo'));
   $('redo').addEventListener('click',()=>travelHistory('redo'));
   $('add-blank').addEventListener('click',()=>addTemplate(DEFAULT_TEMPLATE.id));
   $('project-name').addEventListener('change',event=>{const name=event.target.value.trim()||'Untitled project';if(name!==project.name)mutate(()=>{project.name=name;});});
   $('fit-view').addEventListener('click',fitView);
   $('center-view').addEventListener('click',()=>{const current=board().viewport;current.x=80;current.y=95;current.zoom=1;paintViewport();save();});
+  for (const kind of ['frontend','backend']) {
+    $(`add-${kind}-zone`).addEventListener('click',()=>{
+      const rect=elements.canvas.getBoundingClientRect();
+      const center=worldPointFromScreen(rect.left+rect.width/2,rect.top+rect.height/2);
+      let id;
+      if (mutate(()=>{id=addZone(project,currentBoardId,kind,{x:center.x-300,y:center.y-150}).id;})) {
+        selected={type:'zone',id};render();message(`${kind} zone added. Drag to move or resize.`);
+      }
+    });
+  }
   $('zoom-in').addEventListener('click',()=>zoomTo(board().viewport.zoom*1.15));
   $('zoom-out').addEventListener('click',()=>zoomTo(board().viewport.zoom/1.15));
   $('new-project').addEventListener('click',()=>{
@@ -440,8 +580,8 @@ function connectEvents() {
     addTemplate(templateId,{x:point.x-BLOCK_WIDTH/2,y:point.y-BLOCK_HEIGHT/2});
   });
   elements.canvas.addEventListener('pointerdown',event=>{
-    if(event.button!==0 || event.target.closest('.block') || event.target.closest('.edge-hit') || event.target.closest('button'))return;
-    if(selected){selected=null;renderBlocks();renderEdges();renderInspector();}
+    if(event.button!==0 || event.target.closest('.block') || event.target.closest('.zone') || event.target.closest('.edge-hit') || event.target.closest('button'))return;
+    if(selected){selected=null;renderZones();renderBlocks();renderEdges();renderInspector();}
     const start={x:event.clientX,y:event.clientY};const position={...board().viewport};
     elements.canvas.classList.add('panning');
     const move=e=>{board().viewport.x=position.x+e.clientX-start.x;board().viewport.y=position.y+e.clientY-start.y;paintViewport();};
@@ -459,6 +599,7 @@ function connectEvents() {
     if((event.key==='Delete'||event.key==='Backspace')&&selected){
       event.preventDefault();const chosen=selected;
       if(chosen.type==='block')mutate(()=>deleteBlock(project,currentBoardId,chosen.id));
+      else if(chosen.type==='zone')mutate(()=>{board().zones=(board().zones ?? []).filter(zone=>zone.id!==chosen.id);});
       else mutate(()=>{board().edges=board().edges.filter(edge=>edge.id!==chosen.id);});
       selected=null;render();
     }
@@ -466,4 +607,4 @@ function connectEvents() {
 }
 
 project=load();currentBoardId=project.rootBoardId;
-connectEvents();renderLibrary();render();
+setupTheme();connectEvents();renderLibrary();render();
