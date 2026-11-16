@@ -247,6 +247,69 @@ export function validateProject(value) {
       }
     }
   }
+  // Cross-board handoffs are explicit metadata, never physical edges.
+  for (const board of boards) {
+    if (board.interfaceBindings === undefined) continue;
+    if (!Array.isArray(board.interfaceBindings) || board.interfaceBindings.length > 64) return 'Invalid interface bindings';
+    const owner = board.ownerBlockId && findBlock(value, board.ownerBlockId)?.block;
+    if (!owner || owner.childBoardId !== board.id) return 'Interface bindings require a child board';
+    const seen = new Set();
+    for (const binding of board.interfaceBindings) {
+      const internalBlock = board.blocks.find(block => block.id === binding?.internal?.blockId);
+      const ownerPort = owner.ports.find(port => port.id === binding?.ownerPortId);
+      const internalPort = internalBlock?.ports.find(port => port.id === binding?.internal?.portId);
+      const key = `${binding?.ownerPortId}\0${binding?.internal?.blockId}\0${binding?.internal?.portId}`;
+      if (!ownerPort || !internalPort || ownerPort.direction !== internalPort.direction || seen.has(key)) return 'Invalid or dangling interface binding';
+      seen.add(key);
+    }
+  }
+  if (value.repositoryUrl !== undefined &&
+    (typeof value.repositoryUrl !== 'string' || value.repositoryUrl.length > 500 ||
+      (value.repositoryUrl !== '' && !/^https:\/\/[^\s/#?]+\/[^\s?#]*$/.test(value.repositoryUrl)))) return 'Invalid repository URL';
+  if (value.tours !== undefined) {
+    if (!Array.isArray(value.tours) || value.tours.length > 32) return 'Invalid tours';
+    const tourIds = new Set(), stepIds = new Set();
+    for (const tour of value.tours) {
+      if (!tour || typeof tour.id !== 'string' || !tour.id || tour.id.length > 150 || tourIds.has(tour.id) ||
+        typeof tour.title !== 'string' || tour.title.length > 200 ||
+        typeof tour.description !== 'string' || tour.description.length > 2000 ||
+        !Array.isArray(tour.steps) || tour.steps.length > 100) return 'Invalid tour';
+      tourIds.add(tour.id);
+      for (const step of tour.steps) {
+        const targetBoard = value.boards[step?.boardId];
+        const hasEdge = typeof step?.edgeId === 'string' && !!step.edgeId;
+        const hasBlock = typeof step?.blockId === 'string' && !!step.blockId;
+        if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 150 || stepIds.has(step.id) ||
+          !targetBoard || hasEdge === hasBlock ||
+          (hasEdge && !targetBoard.edges.some(edge => edge.id === step.edgeId)) ||
+          (hasBlock && !targetBoard.blocks.some(block => block.id === step.blockId)) ||
+          typeof step.title !== 'string' || step.title.length > 200 ||
+          typeof step.narration !== 'string' || step.narration.length > 2000) return 'Invalid tour step: repair its board/target or remove it';
+        stepIds.add(step.id);
+      }
+    }
+  }
+  if (value.workspaceLayouts !== undefined) {
+    if (!Array.isArray(value.workspaceLayouts) || value.workspaceLayouts.length > 12) return 'Invalid workspace layouts';
+    const layoutIds = new Set();
+    for (const layout of value.workspaceLayouts) {
+      if (!layout || typeof layout.id !== 'string' || !layout.id || layout.id.length > 150 || layoutIds.has(layout.id) ||
+        typeof layout.label !== 'string' || layout.label.length > 120) return 'Invalid workspace layout';
+      layoutIds.add(layout.id);
+      const paneIds = new Set();
+      function checkNode(node, depth = 0) {
+        if (!node || depth > 4 || (node.weight !== undefined && (!Number.isFinite(node.weight) || node.weight <= 0 || node.weight > 1))) return false;
+        if (node.type === 'pane') {
+          if (typeof node.id !== 'string' || !node.id || node.id.length > 150 || paneIds.has(node.id) || !value.boards[node.boardId]) return false;
+          paneIds.add(node.id);
+          return paneIds.size <= 4;
+        }
+        return node.type === 'split' && ['horizontal', 'vertical'].includes(node.direction) &&
+          Array.isArray(node.children) && node.children.length === 2 && node.children.every(child => checkNode(child, depth + 1));
+      }
+      if (!checkNode(layout.root)) return 'Invalid workspace layout tree';
+    }
+  }
   if (value.boards[value.rootBoardId].ownerBlockId !== null || childIds.size !== boards.length - 1) return 'Unreachable or detached board';
   for (const board of boards) {
     const path = boardPath(value, board.id);

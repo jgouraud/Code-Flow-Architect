@@ -1,4 +1,5 @@
 import { BLOCK_TEMPLATES, DEFAULT_TEMPLATE, findTemplate } from './library.js';
+import { installWorkspace } from './p1.js';
 import {
   BLOCK_WIDTH, BLOCK_HEIGHT, BLOCK_NATURES, DATA_FORMATS, STORAGE_KEY, LEGACY_STORAGE_KEY,
   MAX_PORTS, PORT_SIDES, addAnnotation, addPort, removePort, addBlock, addZone,
@@ -6,6 +7,8 @@ import {
   deleteBlock, findBlock, migrateProject, validateProject
 } from './model.js';
 
+let p1 = null;
+let workspaceProjectId = null;
 const $ = id => document.getElementById(id);
 const elements = {
   canvas: $('canvas'), scene: $('scene'), edges: $('edge-layer'), blocks: $('blocks-layer'), zones: $('zone-layer'),
@@ -69,7 +72,37 @@ function load() {
   } catch { message('Could not load local project; loaded an example instead.'); }
   return createDemoProject();
 }
-function board() { return project.boards[currentBoardId]; }
+function board() {
+  const canonical = project.boards[currentBoardId];
+  return p1 ? p1.boardView(canonical) : canonical;
+}
+// One canonical project and mutation history; P1 only supplies alternate canvases.
+const baseRender = render, baseInspector = renderInspector, baseOpenBoard = openBoard, baseSelect = select;
+render = function () {
+  if (!p1) {
+    p1 = installWorkspace({
+      project: () => project, elements, message, blockWidth: BLOCK_WIDTH, blockHeight: BLOCK_HEIGHT,
+      readContext: () => ({boardId:currentBoardId,selected,pendingSource,previewPoint}),
+      writeContext: state => {currentBoardId=state.boardId;selected=state.selected;pendingSource=state.pendingSource;previewPoint=state.previewPoint;},
+      render: () => render(), renderPane: () => {renderZones();renderBlocks();renderEdges();paintViewport();},
+      chrome: () => {renderBreadcrumbs();renderInspector();},
+      renderInspector: () => renderInspector(), paintViewport: () => paintViewport(),
+      openBoard: id => openBoard(id), select: value => select(value),
+      mutate: fn => mutate(fn), templateExists: id => !!findTemplate(id),
+      worldPoint: (x,y) => worldPointFromScreen(x,y), addTemplate: (id,position) => addTemplate(id,position),
+      zoomTo: (zoom,x,y) => zoomTo(zoom,x,y)
+    });
+    workspaceProjectId = project.id;
+  }
+  if (workspaceProjectId !== project.id) {p1.onReset();workspaceProjectId=project.id;}
+  baseRender(); p1.afterRender();
+};
+renderInspector = function () {baseInspector();p1?.extendInspector();};
+openBoard = function (id) {
+  if (project.boards[id]) p1?.onNavigate(id,currentBoardId);
+  baseOpenBoard(id);
+};
+select = function (next) {baseSelect(next);p1?.onSelect();};
 function cloneProject() { return JSON.stringify(project); }
 function mutate(operation) {
   const snapshot = cloneProject();
@@ -277,8 +310,9 @@ function renderEdges() {
   const lookup = new Map(current.blocks.map(block => [block.id,block]));
   const palette = document.documentElement.dataset.theme === 'light' ? lightKindColor : kindColor;
   const defs = svg('defs', {});
+  const markerSuffix = elements.edges.dataset.paneMarker ?? 'main';
   for (const [kind, color] of Object.entries(palette)) {
-    const marker = svg('marker', { id: `arrow-${kind}`, viewBox: '0 0 10 10', markerWidth: 11, markerHeight: 11,
+    const marker = svg('marker', { id: `arrow-${kind}-${markerSuffix}`, viewBox: '0 0 10 10', markerWidth: 11, markerHeight: 11,
       refX: 9, refY: 5, orient: 'auto', markerUnits: 'userSpaceOnUse' });
     marker.append(svg('path', { d: 'M 0 1 L 9 5 L 0 9 Z', fill: color }));
     defs.append(marker);
@@ -294,9 +328,9 @@ function renderEdges() {
     const isSelected = selected?.type === 'edge' && selected.id === edge.id;
     const visible = svg('path', { d: geometry.d, stroke: color, 'stroke-width': isSelected ? 3.5 : 2.5,
       fill: 'none', 'stroke-dasharray': edge.kind === 'control' ? '7 6' : edge.kind === 'error' ? '3 6' : 'none',
-      'marker-end': `url(#arrow-${edge.kind})`, class: 'visible-edge' });
+      'marker-end': `url(#arrow-${edge.kind}-${markerSuffix})`, 'data-edge-id': edge.id, class: 'visible-edge' });
     const hit = svg('path', { d: geometry.d, stroke: 'transparent', 'stroke-width': 18,
-      fill: 'none', class: 'edge-hit', tabindex: '0', role: 'button',
+      fill: 'none', class: 'edge-hit', 'data-edge-id': edge.id, tabindex: '0', role: 'button',
       'aria-label': `Select ${edge.kind} connection from ${source.label}, ${output.name} to ${target.label}, ${input.name}` });
     hit.addEventListener('click', event => { event.stopPropagation(); select({type:'edge',id:edge.id}); });
     hit.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); } });
@@ -304,7 +338,7 @@ function renderEdges() {
     if (edge.label) {
       const at = geometry.at(.5);
       const text = svg('text', { x: at.x, y: at.y - 18, fill: document.documentElement.dataset.theme === 'light' ? '#334b70' : '#cbd5e1',
-        'font-size': 12, 'text-anchor': 'middle', 'pointer-events': 'none' });
+        'font-size': 12, 'text-anchor': 'middle', 'pointer-events': 'none', 'data-edge-id': edge.id });
       text.textContent = edge.label.slice(0, 40);
       elements.edges.append(text);
     }
@@ -313,12 +347,12 @@ function renderEdges() {
       const label = `Annotation: ${note.caption || 'Untitled'}. ${note.dataType ? `Type ${note.dataType}.` : ''} Press Enter to inspect.`;
       const dot = svg('circle', { cx: at.x, cy: at.y, r: isSelected ? 8 : 6, fill: color,
         stroke: document.documentElement.dataset.theme === 'light' ? '#fff' : '#18243d', 'stroke-width': 2,
-        class: 'edge-note', tabindex: 0, role: 'button', 'aria-label': label });
+        class: 'edge-note', 'data-edge-id': edge.id, tabindex: 0, role: 'button', 'aria-label': label });
       dot.addEventListener('click', event => { event.stopPropagation(); select({ type:'edge', id:edge.id }); });
       dot.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select({type:'edge',id:edge.id}); } });
       elements.edges.append(dot);
       if (note.dataType) {
-        const badge = svg('text', { x: at.x + 10, y: at.y - 10, class:'edge-type', 'pointer-events':'none' });
+        const badge = svg('text', { x: at.x + 10, y: at.y - 10, class:'edge-type', 'data-edge-id': edge.id, 'pointer-events':'none' });
         badge.textContent = note.dataType.slice(0, 20);
         elements.edges.append(badge);
       }
